@@ -12,6 +12,9 @@
 	const WELCOME_AUDIO_DURATION_SECONDS = 5;
 	const TITLE_TRANSITION_DURATION = 350;
 	const TITLE_UPDATE_DEBOUNCE = 220;
+	const AUDIO_PREFETCH_DELAY_MS = 1500;
+	const AUDIO_PREFETCH_STAGGER_MS = 8000;
+	const AUDIO_PREFETCH_GAP_MS = 300;
 
 	const TRACKS = [
 		{ src: asset("1_ney_defteri_selanik_turkusu.wav"), name: "Selanik Türküsü", duration: 62.54 },
@@ -34,6 +37,50 @@
 			audioStore.addTrackUrl(track.src, track.name, track.src, track.duration);
 		}
 
+		const prefetchController = new AbortController();
+		const prefetchTimer = window.setTimeout(() => {
+			const connection = (navigator as Navigator & {
+				connection?: { saveData?: boolean; effectiveType?: string };
+			}).connection;
+			if (connection?.saveData || connection?.effectiveType === "slow-2g" || connection?.effectiveType === "2g") {
+				return;
+			}
+
+			void (async () => {
+				for (let i = 0; i < TRACKS.length; i++) {
+					if (prefetchController.signal.aborted) return;
+					const track = TRACKS[i];
+					if (!track) continue;
+
+					try {
+						const response = await fetch(track.src, {
+							cache: "default",
+							signal: prefetchController.signal,
+							priority: "low"
+						} as RequestInit & { priority: "low" });
+						if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+						const reader = response.body?.getReader();
+						if (reader) {
+							try {
+								while (!(await reader.read()).done) {}
+							} finally {
+								reader.releaseLock();
+							}
+						} else {
+							await response.arrayBuffer();
+						}
+					} catch (error) {
+						if (prefetchController.signal.aborted) return;
+						console.warn(`[audio] Background cache warm failed for "${track.name}"; playback will retry on demand.`, error);
+					}
+
+					if (i < TRACKS.length - 1) {
+						await new Promise((resolve) => window.setTimeout(resolve, AUDIO_PREFETCH_GAP_MS));
+					}
+				}
+			})();
+		}, AUDIO_PREFETCH_DELAY_MS + Math.random() * AUDIO_PREFETCH_STAGGER_MS);
 
 		const onFullscreenChange = () => {
 			isFullscreen = !!document.fullscreenElement;
@@ -70,6 +117,8 @@
 
 		return () => {
 			audioStore.onTrackEnd = null;
+			window.clearTimeout(prefetchTimer);
+			prefetchController.abort();
 			document.removeEventListener("fullscreenchange", onFullscreenChange);
 			motionPreference.removeEventListener("change", onMotionPreferenceChange);
 		};
