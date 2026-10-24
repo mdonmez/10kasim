@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from "svelte";
+	import { asset } from "$app/paths";
 	import { cubicOut } from "svelte/easing";
 	import { fade } from "svelte/transition";
 	import { ArrowLeftFromLine, ArrowRightFromLine, Expand, IterationCw, Pause, Play, Shrink, StepBack, StepForward } from "@lucide/svelte";
@@ -13,11 +14,11 @@
 	const TITLE_UPDATE_DEBOUNCE = 220;
 
 	const TRACKS = [
-		{ src: "/1_ney_defteri_selanik_turkusu.wav", name: "Selanik Türküsü", duration: 62.54 },
-		{ src: "/2_manastir_turkusu_piyano_karaoke.opus", name: "Manastır Türküsü", duration: 120.6805 },
-		{ src: "/3_her_10_kasim_sabahi_koro_sarkisi_altyapi.opus", name: "Her 10 Kasım Sabahı", duration: 288.1005 },
-		{ src: "/4_hasretinle_fa_diyez_section.mp3", name: "Hasretinle Yandı Gönlüm", duration: 253 },
-		{ src: "/5_zara_hatiran_yeter_karaoke.opus", name: "Hatıran Yeter", duration: 218.8605 }
+		{ src: asset("1_ney_defteri_selanik_turkusu.wav"), name: "Selanik Türküsü", duration: 62.54 },
+		{ src: asset("2_manastir_turkusu_piyano_karaoke.opus"), name: "Manastır Türküsü", duration: 120.6805 },
+		{ src: asset("3_her_10_kasim_sabahi_koro_sarkisi_altyapi.opus"), name: "Her 10 Kasım Sabahı", duration: 288.1005 },
+		{ src: asset("4_hasretinle_fa_diyez_section.mp3"), name: "Hasretinle Yandı Gönlüm", duration: 253 },
+		{ src: asset("5_zara_hatiran_yeter_karaoke.opus"), name: "Hatıran Yeter", duration: 218.8605 }
 	];
 
 	let currentIndex = $state(0);
@@ -294,7 +295,7 @@
 <div class="flex min-h-screen flex-col">
 	<header class="sticky top-0 z-50 w-full bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
 		<div class="mx-auto flex h-28 max-w-[110rem] items-center justify-between px-8">
-			<img src="/hilal-yildiz.svg" alt="Hilal ve yıldız" class="h-auto w-24" />
+			<img src={asset("hilal-yildiz.svg")} alt="Hilal ve yıldız" class="h-auto w-24" />
 			<h1 class="text-5xl font-extrabold tracking-tight">10.11</h1>
 		</div>
 	</header>
@@ -305,7 +306,7 @@
 			aria-hidden="true"
 			class="pointer-events-none absolute left-1/2 top-[32%] z-0 h-[min(64vh,44rem)] aspect-[9/16] -translate-x-1/2 -translate-y-1/2 overflow-hidden"
 		>
-			<img src="/newfoto.jpg" alt="" class="h-full w-full object-contain" />
+			<img src={asset("newfoto.jpg")} alt="" class="h-full w-full object-contain" />
 			<div class="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-b from-transparent via-black/60 to-black"></div>
 		</div>
 		<div class="relative z-10 w-full py-8">
