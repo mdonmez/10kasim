@@ -15,7 +15,7 @@
 		{ src: "/1_ney_defteri_selanik_turkusu.wav", name: "Selanik Türküsü" },
 		{ src: "/2_manastir_turkusu_piyano_karaoke.opus", name: "Manastır Türküsü" },
 		{ src: "/3_her_10_kasim_sabahi_koro_sarkisi_altyapi.opus", name: "Her 10 Kasım Sabahı" },
-		{ src: "/4_hasretinle_fa_diyez_section.wav", name: "Hasretinle Yandı Gönlüm" },
+		{ src: "/4_hasretinle_fa_diyez_section.mp3", name: "Hasretinle Yandı Gönlüm" },
 		{ src: "/5_zara_hatiran_yeter_karaoke.opus", name: "Hatıran Yeter" }
 	];
 
