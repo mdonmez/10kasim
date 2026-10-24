@@ -403,11 +403,11 @@
 
 			<div class="relative mt-2 flex items-center justify-center">
 				<div class="absolute left-0 flex items-center gap-2">
-					<Button size="icon-lg" variant="outline" onclick={restartAll} aria-label="Tümünü başa sar">
+					<Button size="icon-xs" variant="outline" onclick={restartAll} aria-label="Tümünü başa sar">
 						<IterationCw />
 					</Button>
 					<Button
-						size="icon-lg"
+						size="icon-xs"
 						variant="outline"
 						onclick={handlePreviousTrack}
 						aria-label="Önceki parça veya başa sar"
@@ -416,7 +416,7 @@
 						<ArrowLeftFromLine />
 					</Button>
 					<Button
-						size="icon-lg"
+						size="icon-xs"
 						variant="outline"
 						onclick={handleNextTrack}
 						aria-label="Sonraki parça"
@@ -441,7 +441,7 @@
 					</Button>
 				</div>
 				<div class="absolute right-0">
-					<Button size="icon-lg" variant="outline" onclick={toggleFullscreen} aria-label="Tam ekran">
+					<Button size="icon-xs" variant="outline" onclick={toggleFullscreen} aria-label="Tam ekran">
 						{#if isFullscreen}
 							<Shrink />
 						{:else}
