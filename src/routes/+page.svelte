@@ -9,14 +9,15 @@
 
 	const PREVIOUS_TRACK_RESTART_THRESHOLD = 3;
 	const WELCOME_AUDIO_DURATION_SECONDS = 5;
-	const TITLE_TRANSITION_DURATION = 600;
+	const TITLE_TRANSITION_DURATION = 350;
+	const TITLE_UPDATE_DEBOUNCE = 220;
 
 	const TRACKS = [
-		{ src: "/1_ney_defteri_selanik_turkusu.wav", name: "Selanik Türküsü" },
-		{ src: "/2_manastir_turkusu_piyano_karaoke.opus", name: "Manastır Türküsü" },
-		{ src: "/3_her_10_kasim_sabahi_koro_sarkisi_altyapi.opus", name: "Her 10 Kasım Sabahı" },
-		{ src: "/4_hasretinle_fa_diyez_section.mp3", name: "Hasretinle Yandı Gönlüm" },
-		{ src: "/5_zara_hatiran_yeter_karaoke.opus", name: "Hatıran Yeter" }
+		{ src: "/1_ney_defteri_selanik_turkusu.wav", name: "Selanik Türküsü", duration: 62.54 },
+		{ src: "/2_manastir_turkusu_piyano_karaoke.opus", name: "Manastır Türküsü", duration: 120.6805 },
+		{ src: "/3_her_10_kasim_sabahi_koro_sarkisi_altyapi.opus", name: "Her 10 Kasım Sabahı", duration: 288.1005 },
+		{ src: "/4_hasretinle_fa_diyez_section.mp3", name: "Hasretinle Yandı Gönlüm", duration: 253 },
+		{ src: "/5_zara_hatiran_yeter_karaoke.opus", name: "Hatıran Yeter", duration: 218.8605 }
 	];
 
 	let currentIndex = $state(0);
@@ -29,7 +30,7 @@
 
 	onMount(() => {
 		for (const track of TRACKS) {
-			void audioStore.addTrackUrl(track.src, track.name, track.src);
+			audioStore.addTrackUrl(track.src, track.name, track.src, track.duration);
 		}
 
 
@@ -83,9 +84,13 @@
 	const playbackPosition = $derived.by(() => {
 		let position = 0;
 		for (let i = 0; i < currentIndex; i++) {
-			position += audioStore.tracks[i]?.duration ?? 0;
+			const duration = audioStore.tracks[i]?.duration;
+			if (duration !== undefined && Number.isFinite(duration) && duration > 0) {
+				position += duration;
+			}
 		}
-		return position + (currentTrack?.currentTime ?? 0);
+		const currentTime = currentTrack?.currentTime ?? 0;
+		return position + (Number.isFinite(currentTime) ? currentTime : 0);
 	});
 	const displayTitle = $derived(
 		titleMode === "ending"
@@ -94,15 +99,31 @@
 				? "Hoş Geldiniz"
 				: (currentTrack?.name ?? "Hoş Geldiniz")
 	);
+	let presentedTitle = $state("Hoş Geldiniz");
 
-	const totalDuration = $derived(audioStore.tracks.reduce((sum, t) => sum + (t.duration > 0 ? t.duration : 0), 0));
+	$effect(() => {
+		const nextTitle = displayTitle;
+		const timeout = window.setTimeout(() => {
+			presentedTitle = nextTitle;
+		}, TITLE_UPDATE_DEBOUNCE);
+
+		return () => window.clearTimeout(timeout);
+	});
+
+	const totalDuration = $derived(
+		audioStore.tracks.reduce(
+			(sum, track) => sum + (Number.isFinite(track.duration) && track.duration > 0 ? track.duration : 0),
+			0
+		)
+	);
 
 	const cutPositions = $derived.by(() => {
 		if (totalDuration <= 0) return [];
 		let acc = 0;
 		const positions: number[] = [];
 		for (let i = 0; i < audioStore.tracks.length - 1; i++) {
-			acc += audioStore.tracks[i].duration > 0 ? audioStore.tracks[i].duration : 0;
+			const duration = audioStore.tracks[i].duration;
+			acc += Number.isFinite(duration) && duration > 0 ? duration : 0;
 			positions.push((acc / totalDuration) * 100);
 		}
 		return positions;
@@ -115,11 +136,11 @@
 			return;
 		}
 		if (isSeeking) return;
-		if (totalDuration <= 0) {
+		if (!Number.isFinite(totalDuration) || totalDuration <= 0) {
 			globalPercent = 0;
 			return;
 		}
-		globalPercent = (playbackPosition / totalDuration) * 100;
+		globalPercent = Math.max(0, Math.min(100, (playbackPosition / totalDuration) * 100));
 	});
 
 	function showTrackTitle(): void {
@@ -128,7 +149,7 @@
 	}
 
 	function handleGlobalCommit(val: number): void {
-		if (totalDuration <= 0 || audioStore.tracks.length === 0) {
+		if (!Number.isFinite(val) || !Number.isFinite(totalDuration) || totalDuration <= 0 || audioStore.tracks.length === 0) {
 			isSeeking = false;
 			return;
 		}
@@ -138,7 +159,8 @@
 		let idx = 0;
 		let offset = 0;
 		for (let i = 0; i < audioStore.tracks.length; i++) {
-			const d = audioStore.tracks[i].duration > 0 ? audioStore.tracks[i].duration : 0;
+			const duration = audioStore.tracks[i].duration;
+			const d = Number.isFinite(duration) && duration > 0 ? duration : 0;
 			if (target < acc + d || i === audioStore.tracks.length - 1) {
 				idx = i;
 				offset = Math.max(0, target - acc);
@@ -287,19 +309,15 @@
 			<div class="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-b from-transparent via-black/60 to-black"></div>
 		</div>
 		<div class="relative z-10 w-full py-8">
-			{#if displayTitle}
+			{#if presentedTitle}
 				<div class="mb-6 grid place-items-center">
-					{#key displayTitle}
+					{#key presentedTitle}
 						<h2
 							class="col-start-1 row-start-1 w-full -translate-y-6 text-center text-5xl font-extrabold tracking-tight"
-							in:fade={{
-								delay: displayTitle !== "Hoş Geldiniz" && !prefersReducedMotion ? TITLE_TRANSITION_DURATION : 0,
-								duration: prefersReducedMotion ? 0 : TITLE_TRANSITION_DURATION,
-								easing: cubicOut
-							}}
+							in:fade={{ duration: prefersReducedMotion ? 0 : TITLE_TRANSITION_DURATION, easing: cubicOut }}
 							out:fade={{ duration: prefersReducedMotion ? 0 : TITLE_TRANSITION_DURATION, easing: cubicOut }}
 						>
-							{displayTitle}
+							{presentedTitle}
 						</h2>
 					{/key}
 				</div>
@@ -311,26 +329,27 @@
 						<button
 							type="button"
 							class="truncate px-1 text-center text-xs transition-[color,opacity] duration-400 ease-out {i === currentIndex ? 'font-semibold text-foreground opacity-100' : 'text-muted-foreground opacity-60 hover:text-foreground hover:opacity-100'}"
-							style="flex: {track.duration > 0 ? track.duration : 1} 1 0%"
+							style="flex: {Number.isFinite(track.duration) && track.duration > 0 ? track.duration : 1} 1 0%"
 							onclick={() => selectTrack(i)}
 						>
 							{track.name}
 						</button>
 					{/each}
 				</div>
-				<Slider
-					type="single"
-					max={100}
-					step={0.1}
-					class="mb-6 w-full"
-					cuts={cutPositions}
-					bind:value={globalPercent}
-					onValueCommit={(val: number) => handleGlobalCommit(val)}
-					onpointerdown={() => {
-						isSeeking = true;
-					}}
-				/>
 			{/if}
+
+			<Slider
+				type="single"
+				max={100}
+				step={0.1}
+				class="mb-6 w-full"
+				cuts={cutPositions}
+				bind:value={globalPercent}
+				onValueCommit={(val: number) => handleGlobalCommit(val)}
+				onpointerdown={() => {
+					isSeeking = true;
+				}}
+			/>
 
 			<div class="relative mt-2 flex items-center justify-center">
 				<div class="absolute left-0 flex items-center gap-2">

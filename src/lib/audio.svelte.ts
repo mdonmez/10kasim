@@ -14,6 +14,8 @@ type HowlLike = {
 	play: (soundId?: HowlSoundId) => HowlSoundId | unknown;
 	pause: (soundId?: HowlSoundId) => unknown;
 	unload: () => unknown;
+	state: () => string;
+	load: () => unknown;
 	once: (event: string, callback: () => void) => unknown;
 };
 
@@ -40,14 +42,10 @@ interface HowlRecord {
 	awaitingPlayEvent: boolean;
 	/** True when the source URL is a blob that must be revoked on removeTrack(). */
 	isBlobUrl: boolean;
+	/** Prevents scheduling multiple play calls while a deferred source is loading. */
+	isLoading: boolean;
 }
 
-/**
- * Howler primes its HTML5 audio pool itself only inside its AudioContext
- * unlock handler (which is skipped when usingWebAudio=false), so we prime
- * it manually — with the same unlocked-node marker howler uses.
- */
-const POOL_SIZE = 4;
 
 class AudioStore {
 	tracks = $state<TrackState[]>([]);
@@ -71,26 +69,7 @@ class AudioStore {
 		| null
 	> {
 		if (!browser) return null;
-		this.#howlerPromise ??= import("howler").then(({ Howl, Howler }) => {
-			// Play strictly via HTMLAudioElement (html5:true). Skipping the
-			// AudioContext entirely avoids "AudioContext was not allowed to
-			// start" autoplay-policy noise at page load; playback starts on the
-			// first click without needing an audio unlock.
-			Howler.usingWebAudio = false;
-
-			// Howler only primes its HTML5 audio pool inside its AudioContext
-			// unlock handler, which is skipped when usingWebAudio=false. Prime
-			// it manually so the first Howl doesn't log "HTML5 Audio pool
-			// exhausted" (its empty-pool fallback even plays an empty Audio,
-			// which Chrome rejects with NotSupportedError on every cold start).
-			const self = Howler as unknown as { _html5AudioPool: HTMLAudioElement[] };
-			while (self._html5AudioPool.length < POOL_SIZE) {
-				const node = new Audio();
-				// Mark as unlocked so howler returns the node to the pool when released.
-				(node as unknown as { _unlocked: boolean })._unlocked = true;
-				self._html5AudioPool.push(node);
-			}
-
+		this.#howlerPromise ??= import("howler").then(({ Howl }) => {
 			return { Howl } as unknown as { Howl: new (options: Record<string, unknown>) => HowlLike };
 		});
 		const { Howl } = await this.#howlerPromise;
@@ -106,7 +85,8 @@ class AudioStore {
 	}
 
 	#clampSeek(track: TrackState, seconds: number): number {
-		const max = track.duration > 0 ? track.duration : Number.POSITIVE_INFINITY;
+		if (!Number.isFinite(seconds)) return 0;
+		const max = Number.isFinite(track.duration) && track.duration > 0 ? track.duration : Number.POSITIVE_INFINITY;
 		return Math.max(0, Math.min(seconds, max));
 	}
 
@@ -190,12 +170,14 @@ class AudioStore {
 		src,
 		name,
 		id = crypto.randomUUID(),
-		isBlobUrl = false
+		isBlobUrl = false,
+		duration = 0
 	}: {
 		src: string;
 		name: string;
 		id?: string;
 		isBlobUrl?: boolean;
+		duration?: number;
 	}): Promise<void> {
 		if (!browser) return;
 
@@ -213,7 +195,7 @@ class AudioStore {
 			volumeBeforeMute: 100,
 			loop: false,
 			currentTime: 0,
-			duration: 0
+			duration: Number.isFinite(duration) && duration > 0 ? duration : 0
 		};
 
 		const rec: HowlRecord = {
@@ -224,39 +206,23 @@ class AudioStore {
 			soundId: null,
 			pendingSeek: null,
 			awaitingPlayEvent: false,
-			isBlobUrl
+			isBlobUrl,
+			isLoading: false
 		};
 
-		// Prime duration from metadata so UI can show length and allow scrubbing
-		// before the first playback starts.
-		const metadataProbe = new Audio(src);
-		metadataProbe.preload = "metadata";
-		metadataProbe.addEventListener(
-			"loadedmetadata",
-			() => {
-				const track = this.tracks.find((t) => t.id === id);
-				if (!track) return;
-				if (isFinite(metadataProbe.duration) && metadataProbe.duration > 0) {
-					track.duration = metadataProbe.duration;
-				}
-			},
-			{ once: true }
-		);
 
 		const howl = new Howl({
 			src: [src],
-			// Web Audio (buffered) mode – our sources are small static files, not
-			// arbitrary-size blobs, so buffering avoids the html5 audio pool and
-			// its "pool exhausted" noise. Howler still auto-unlocks the context
-			// after the first user gesture (autoplay policy).
+			// Buffer only the selected track so in-track seeking works without preloading the playlist.
 			html5: false,
 			volume: this.#effectiveVolume(state),
 			loop: state.loop,
-			preload: true,
+			preload: false,
 
 			onload: () => {
 				const track = this.tracks.find((t) => t.id === id);
-				if (track) track.duration = howl.duration();
+				const duration = howl.duration();
+				if (track && Number.isFinite(duration) && duration > 0) track.duration = duration;
 			},
 
 			onplay: (soundId: number) => {
@@ -291,6 +257,9 @@ class AudioStore {
 			},
 
 			onloaderror: (_soundId: number, error: unknown) => {
+				rec.isLoading = false;
+				rec.awaitingPlayEvent = false;
+				state.playing = false;
 				console.error(`[audio] Load error – "${state.name}":`, error);
 			},
 
@@ -337,8 +306,8 @@ class AudioStore {
 	}
 
 	/** Adds a track from a fixed source URL (e.g. /static asset), with a stable optional id. */
-	async addTrackUrl(src: string, name: string, id?: string): Promise<void> {
-		await this.#addTrackSource({ src, name, id });
+	async addTrackUrl(src: string, name: string, id?: string, duration?: number): Promise<void> {
+		await this.#addTrackSource({ src, name, id, duration });
 	}
 
 	removeTrack(id: string): void {
@@ -363,36 +332,49 @@ class AudioStore {
 		}
 	}
 
+	#startLoadedTrack(id: string, rec: HowlRecord): void {
+		const track = this.tracks.find((t) => t.id === id);
+		if (!track || !track.playing) return;
+
+		let soundId = rec.soundId;
+		if (soundId !== null) {
+			const resumedId = rec.howl.play(soundId);
+			if (typeof resumedId === "number") soundId = resumedId;
+		} else {
+			soundId = rec.howl.play() as number;
+		}
+
+		if (typeof soundId === "number") rec.soundId = soundId;
+	}
+
 	play(id: string): void {
 		const track = this.tracks.find((t) => t.id === id);
 		const rec = this.#howls.get(id);
 		if (!track || !rec) return;
 
-		// Capture the desired playback position before touching Howler.
-		// This covers the case where the user seeked the progress slider
-		// while the track was stopped / had ended (soundId === null).
-		const targetTime = track.currentTime;
-
-		let soundId = rec.soundId;
-		rec.pendingSeek = targetTime;
+		// Preserve a pending seek until the file is loaded and can honor it.
+		rec.pendingSeek = track.currentTime;
 		rec.awaitingPlayEvent = true;
-
-		if (soundId !== null) {
-			// Resume the existing (paused) sound instance.
-			const resumedId = rec.howl.play(soundId);
-			if (typeof resumedId === "number") {
-				soundId = resumedId;
-			}
-		} else {
-			// First play, or resuming after a non-looping sound ended.
-			soundId = rec.howl.play() as number;
-		}
-
-		if (typeof soundId === "number") {
-			rec.soundId = soundId;
-		}
-
 		track.playing = true;
+
+		if (rec.howl.state() !== "loaded") {
+			if (rec.isLoading) return;
+
+			rec.isLoading = true;
+			rec.howl.once("load", () => {
+				rec.isLoading = false;
+				if (this.#howls.get(id) !== rec) return;
+				if (!this.tracks.find((candidate) => candidate.id === id)?.playing) {
+					rec.awaitingPlayEvent = false;
+					return;
+				}
+				this.#startLoadedTrack(id, rec);
+			});
+			if (rec.howl.state() === "unloaded") rec.howl.load();
+			return;
+		}
+
+		this.#startLoadedTrack(id, rec);
 	}
 
 	pause(id: string): void {
