@@ -1,0 +1,33 @@
+node_modules
+
+# Output and caches
+.output
+.vercel
+.netlify
+.wrangler
+/.svelte-kit
+/build
+/dist
+/.vite
+/coverage
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+*:Zone.Identifier
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Logs
+*.log
+npm-debug.log*
+bun-debug.log*
