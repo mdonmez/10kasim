@@ -12,15 +12,14 @@
 	const WELCOME_AUDIO_DURATION_SECONDS = 5;
 	const TITLE_TRANSITION_DURATION = 350;
 	const TITLE_UPDATE_DEBOUNCE = 220;
-	const AUDIO_PREFETCH_DELAY_MS = 1500;
-	const AUDIO_PREFETCH_STAGGER_MS = 8000;
-	const AUDIO_PREFETCH_GAP_MS = 300;
+	const AUDIO_PREFETCH_DELAY_MS = 3000;
+	const AUDIO_PREFETCH_GAP_MS = 200;
 
 	const TRACKS = [
-		{ src: asset("1_ney_defteri_selanik_turkusu.wav"), name: "Selanik Türküsü", duration: 62.54 },
+		{ src: asset("1_ney_defteri_selanik_turkusu.opus"), name: "Selanik Türküsü", duration: 62.5465 },
 		{ src: asset("2_manastir_turkusu_piyano_karaoke.opus"), name: "Manastır Türküsü", duration: 120.6805 },
 		{ src: asset("3_her_10_kasim_sabahi_koro_sarkisi_altyapi.opus"), name: "Her 10 Kasım Sabahı", duration: 288.1005 },
-		{ src: asset("4_hasretinle_fa_diyez_section.mp3"), name: "Hasretinle Yandı Gönlüm", duration: 253 },
+		{ src: asset("5_hasretinle_mi_section.opus"), name: "Hasretinle Yandı Gönlüm", duration: 256.0065 },
 		{ src: asset("5_zara_hatiran_yeter_karaoke.opus"), name: "Hatıran Yeter", duration: 218.8605 }
 	];
 
@@ -47,7 +46,9 @@
 			}
 
 			void (async () => {
-				for (let i = 0; i < TRACKS.length; i++) {
+				// Tracks 0 and 1 are preloaded/decoded by the store as soon as they
+				// are added, so only warm the remaining files here.
+				for (let i = 2; i < TRACKS.length; i++) {
 					if (prefetchController.signal.aborted) return;
 					const track = TRACKS[i];
 					if (!track) continue;
@@ -60,16 +61,9 @@
 						} as RequestInit & { priority: "low" });
 						if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-						const reader = response.body?.getReader();
-						if (reader) {
-							try {
-								while (!(await reader.read()).done) {}
-							} finally {
-								reader.releaseLock();
-							}
-						} else {
-							await response.arrayBuffer();
-						}
+						// Consume the body so the response lands in the HTTP cache;
+						// arrayBuffer() keeps this out of the JS hot path.
+						await response.arrayBuffer();
 					} catch (error) {
 						if (prefetchController.signal.aborted) return;
 						console.warn(`[audio] Background cache warm failed for "${track.name}"; playback will retry on demand.`, error);
@@ -80,7 +74,7 @@
 					}
 				}
 			})();
-		}, AUDIO_PREFETCH_DELAY_MS + Math.random() * AUDIO_PREFETCH_STAGGER_MS);
+		}, AUDIO_PREFETCH_DELAY_MS);
 
 		const onFullscreenChange = () => {
 			isFullscreen = !!document.fullscreenElement;
@@ -131,6 +125,36 @@
 	});
 
 	const currentTrack = $derived(audioStore.tracks[currentIndex] as TrackState | undefined);
+
+	// Decode the current and next track ahead of time, and free everything
+	// further away. Each decoded track can take 40–110 MB of RAM, so keeping
+	// the whole playlist buffered is unnecessary and risky on low-memory devices.
+	$effect(() => {
+		const index = currentIndex;
+		const tracks = audioStore.tracks;
+
+		if (index < 0) {
+			// Playlist finished: keep only the last track for the "previous" action.
+			const keepId = tracks[tracks.length - 1]?.id;
+			for (const track of tracks) {
+				if (track.id !== keepId) audioStore.release(track.id);
+			}
+			return;
+		}
+
+		const current = tracks[index];
+		const next = tracks[index + 1];
+		if (current) audioStore.preload(current.id);
+		if (next) audioStore.preload(next.id);
+
+		for (let i = 0; i < tracks.length; i++) {
+			if (i < index || i > index + 1) {
+				const stale = tracks[i];
+				if (stale) audioStore.release(stale.id);
+			}
+		}
+	});
+
 	const playbackPosition = $derived.by(() => {
 		let position = 0;
 		for (let i = 0; i < currentIndex; i++) {

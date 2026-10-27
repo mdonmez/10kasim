@@ -2,6 +2,9 @@ import { browser } from "$app/env";
 
 type HowlSoundId = number;
 
+/** UI progress doesn't need 60 fps; polling at 20 Hz keeps the slider smooth without burning CPU. */
+const CURRENT_TIME_UPDATE_INTERVAL_MS = 50;
+
 type HowlLike = {
 	seek: {
 		(soundId?: HowlSoundId): number | unknown;
@@ -60,7 +63,7 @@ class AudioStore {
 	#howlerPromise: Promise<{ Howl: new (options: Record<string, unknown>) => HowlLike }> | null =
 		null;
 	#howls = new Map<string, HowlRecord>();
-	#rafId: number | null = null;
+	#pollId: number | null = null;
 
 	async #getHowlCtor(): Promise<
 		| ((new (options: Record<string, unknown>) => HowlLike) & {
@@ -132,12 +135,18 @@ class AudioStore {
 		}
 	}
 
-	// ─── RAF tick (currentTime polling) ──────────────────────────────────────
+	// ─── currentTime polling ──────────────────────────────────────────────────
 
-	#startRaf(): void {
-		if (this.#rafId !== null) return;
+	#startPolling(): void {
+		if (this.#pollId !== null) return;
 
-		const tick = () => {
+		this.#pollId = window.setInterval(() => {
+			// Nothing is playing – stop the loop entirely and let play() restart it.
+			if (!this.tracks.some((track) => track.playing)) {
+				this.#stopPolling();
+				return;
+			}
+
 			for (const track of this.tracks) {
 				if (!track.playing) continue;
 				const rec = this.#howls.get(track.id);
@@ -151,16 +160,13 @@ class AudioStore {
 					track.currentTime = pos;
 				}
 			}
-			this.#rafId = requestAnimationFrame(tick);
-		};
-
-		this.#rafId = requestAnimationFrame(tick);
+		}, CURRENT_TIME_UPDATE_INTERVAL_MS);
 	}
 
-	#stopRaf(): void {
-		if (this.#rafId !== null) {
-			cancelAnimationFrame(this.#rafId);
-			this.#rafId = null;
+	#stopPolling(): void {
+		if (this.#pollId !== null) {
+			window.clearInterval(this.#pollId);
+			this.#pollId = null;
 		}
 	}
 
@@ -292,7 +298,6 @@ class AudioStore {
 		rec.howl = howl;
 		this.#howls.set(id, rec);
 		this.tracks.push(state);
-		this.#startRaf();
 	}
 
 	// ─── Public API ───────────────────────────────────────────────────────────
@@ -323,7 +328,7 @@ class AudioStore {
 		const idx = this.tracks.findIndex((t) => t.id === id);
 		if (idx !== -1) this.tracks.splice(idx, 1);
 
-		if (this.tracks.length === 0) this.#stopRaf();
+		if (this.tracks.length === 0) this.#stopPolling();
 	}
 
 	clearAll(): void {
@@ -347,6 +352,34 @@ class AudioStore {
 		if (typeof soundId === "number") rec.soundId = soundId;
 	}
 
+	/**
+	 * Fetches and decodes a track in the background so play() can start
+	 * immediately. Howler keeps the decoded buffer, so repeat calls are cheap.
+	 */
+	preload(id: string): void {
+		const rec = this.#howls.get(id);
+		if (!rec) return;
+		if (rec.howl.state() === "unloaded") rec.howl.load();
+	}
+
+	/**
+	 * Frees a track's decoded audio buffer while preserving its play position.
+	 * Only call this for tracks outside the current/next window; preload() or
+	 * play() will transparently reload the file (from the HTTP cache) later.
+	 */
+	release(id: string): void {
+		const track = this.tracks.find((t) => t.id === id);
+		const rec = this.#howls.get(id);
+		if (!track || !rec || track.playing) return;
+		if (rec.howl.state() !== "loaded") return;
+
+		rec.howl.unload();
+		rec.soundId = null;
+		rec.pendingSeek = track.currentTime;
+		rec.awaitingPlayEvent = false;
+		rec.isLoading = false;
+	}
+
 	play(id: string): void {
 		const track = this.tracks.find((t) => t.id === id);
 		const rec = this.#howls.get(id);
@@ -356,6 +389,7 @@ class AudioStore {
 		rec.pendingSeek = track.currentTime;
 		rec.awaitingPlayEvent = true;
 		track.playing = true;
+		this.#startPolling();
 
 		if (rec.howl.state() !== "loaded") {
 			if (rec.isLoading) return;
