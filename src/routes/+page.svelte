@@ -33,14 +33,15 @@
 	const GUEST_MESSAGE = "Fatma Ela Sarı";
 	const GUEST_TITLE_START_SECONDS = TRACKS[3].start + 7;
 	const GUEST_TITLE_END_SECONDS = GUEST_TITLE_START_SECONDS + 5;
+	const MEDIA_BASE_URL = "https://mdonmez.github.io/10kasim/";
+	const mediaAsset = (filename: Parameters<typeof asset>[0]) =>
+		import.meta.env.DEV ? asset(filename) : `${MEDIA_BASE_URL}${filename}`;
 	const AUDIO_SOURCE = {
-		src: asset("onkasim.opus"),
+		src: mediaAsset("onkasim.opus"),
 		name: "10 Kasım",
 		duration: MERGED_AUDIO_DURATION_SECONDS
 	};
-	const INTRO_VIDEO_SOURCE = import.meta.env.DEV
-		? asset("0_saygiistiklal-full.mp4")
-		: "https://mdonmez.github.io/10kasim/0_saygiistiklal-full.mp4";
+	const INTRO_VIDEO_SOURCE = mediaAsset("0_saygiistiklal-full.mp4");
 
 	let isSeeking = $state(false);
 	let globalPercent = $state(0);
@@ -93,7 +94,7 @@
 		if (!introVideo || !introAudio) return;
 
 		if (!introVideo.src) introVideo.src = INTRO_VIDEO_SOURCE;
-		if (!introAudio.src) introAudio.src = asset("0_saygiistiklal-intro.opus");
+		if (!introAudio.src) introAudio.src = mediaAsset("0_saygiistiklal-intro.opus");
 		isIntroReady = true;
 	}
 
