@@ -219,8 +219,8 @@ class AudioStore {
 
 		const howl = new Howl({
 			src: [src],
-			// Buffer only the selected track so in-track seeking works without preloading the playlist.
-			html5: false,
+			// Stream long tracks through native media instead of decoding the full file into WebAudio memory.
+			html5: true,
 			volume: this.#effectiveVolume(state),
 			loop: state.loop,
 			preload: false,
@@ -254,11 +254,12 @@ class AudioStore {
 				// for looping sounds at each cycle in some builds).
 				if (r.soundId === soundId && !track.loop) {
 					track.playing = false;
-					track.currentTime = 0;
 					r.soundId = null;
 					r.pendingSeek = 0;
 					r.awaitingPlayEvent = false;
 					this.onTrackEnd?.(id);
+					// Let completion listeners settle terminal UI state before the playhead resets.
+					track.currentTime = 0;
 				}
 			},
 

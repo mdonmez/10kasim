@@ -8,25 +8,8 @@
 		orientation = "horizontal",
 		class: className,
 		cuts = [],
-		segmentColors = [],
 		...restProps
-	}: WithoutChildrenOrChild<SliderPrimitive.RootProps> & { cuts?: number[]; segmentColors?: string[] } = $props();
-
-	const defaultColors = ["#3a4a5a", "#4a3a5a", "#3a5a4a", "#5a4a3a", "#5a3a4a"];
-
-	const colors = $derived(segmentColors.length ? segmentColors : defaultColors);
-
-	const trackStyle = $derived.by(() => {
-		if (orientation !== "horizontal") return "";
-		const stops: string[] = [];
-		const positions = [0, ...cuts, 100];
-		for (let i = 0; i < positions.length - 1; i++) {
-			const color = colors[i % colors.length];
-			stops.push(`${color} ${positions[i]}%`);
-			stops.push(`${color} ${positions[i + 1]}%`);
-		}
-		return `background: linear-gradient(to right, ${stops.join(", ")});`;
-	});
+	}: WithoutChildrenOrChild<SliderPrimitive.RootProps> & { cuts?: number[] } = $props();
 </script>
 
 <SliderPrimitive.Root
@@ -45,9 +28,8 @@
 			data-slot="proslider-track"
 			data-orientation={orientation}
 			class={cn(
-				"rounded-full data-horizontal:h-1 data-horizontal:w-full data-vertical:h-full data-vertical:w-1 relative grow overflow-hidden data-horizontal:w-full data-vertical:h-full"
+				"rounded-full data-horizontal:h-1 data-horizontal:w-full data-vertical:h-full data-vertical:w-1 relative grow overflow-hidden bg-muted data-horizontal:w-full data-vertical:h-full"
 			)}
-			style={trackStyle}
 		>
 			<SliderPrimitive.Range
 				data-slot="proslider-range"

@@ -1,0 +1,8 @@
+/*.mp4
+  Cache-Control: public, max-age=86400, stale-while-revalidate=86400
+
+/*.opus
+  Cache-Control: public, max-age=86400, stale-while-revalidate=86400
+
+/*.jpg
+  Cache-Control: public, max-age=86400, stale-while-revalidate=86400

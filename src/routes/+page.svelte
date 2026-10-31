@@ -1,207 +1,362 @@
 <script lang="ts">
-	import { onMount } from "svelte";
-	import { asset } from "$app/paths";
-	import { cubicOut } from "svelte/easing";
+	import { onMount, tick } from "svelte";
+	import { cubicInOut } from "svelte/easing";
 	import { fade } from "svelte/transition";
-	import { ArrowLeftFromLine, ArrowRightFromLine, Expand, IterationCw, Pause, Play, Shrink, StepBack, StepForward } from "@lucide/svelte";
+
+	import { prefersReducedMotion } from "svelte/motion";
+	import { asset } from "$app/paths";
+
+	import { ArrowLeftFromLine, ArrowRightFromLine, Drum, Expand, IterationCw, Pause, Play, Shrink, SkipForward, Undo2 } from "@lucide/svelte";
 	import { Button } from "#lib/components/ui/button";
 	import { ProSlider as Slider } from "#lib/components/ui/proslider";
 	import { audioStore, type TrackState } from "#lib/audio.svelte.js";
 
 	const PREVIOUS_TRACK_RESTART_THRESHOLD = 3;
-	const WELCOME_AUDIO_DURATION_SECONDS = 5;
-	const TITLE_TRANSITION_DURATION = 350;
-	const TITLE_UPDATE_DEBOUNCE = 220;
-	const AUDIO_PREFETCH_DELAY_MS = 3000;
-	const AUDIO_PREFETCH_GAP_MS = 200;
-
+	const WELCOME_HOLD_DURATION_SECONDS = 7;
+	const SIDE_CONTROLS_HIDE_DELAY_MS = 5000;
+	const TITLE_FADE_DURATION_MS = 1000;
+	const MERGED_AUDIO_DURATION_SECONDS = 943.248667;
+	const FINAL_MESSAGE_START_SECONDS = MERGED_AUDIO_DURATION_SECONDS - WELCOME_HOLD_DURATION_SECONDS;
+	const WELCOME_TITLE = "Hoş Geldiniz";
+	const ENDING_MESSAGE = "Saygı, Minnet ve Özlemle";
+	type MainTextState = {
+		kind: "welcome" | "track" | "guest" | "ending";
+		text: string;
+	};
 	const TRACKS = [
-		{ src: asset("1_ney_defteri_selanik_turkusu.opus"), name: "Selanik Türküsü", duration: 62.5465 },
-		{ src: asset("2_manastir_turkusu_piyano_karaoke.opus"), name: "Manastır Türküsü", duration: 120.6805 },
-		{ src: asset("3_her_10_kasim_sabahi_koro_sarkisi_altyapi.opus"), name: "Her 10 Kasım Sabahı", duration: 288.1005 },
-		{ src: asset("5_hasretinle_mi_section.opus"), name: "Hasretinle Yandı Gönlüm", duration: 256.0065 },
-		{ src: asset("5_zara_hatiran_yeter_karaoke.opus"), name: "Hatıran Yeter", duration: 218.8605 }
-	];
+		{ name: "Selanik Türküsü", start: 0, end: 62.74, fadeOutStart: 59.54 },
+		{ name: "Manastır Türküsü", start: 62.74, end: 183.621, fadeOutStart: 180.421 },
+		{ name: "Her 10 Kasım Sabahı", start: 183.621, end: 471.922, fadeOutStart: 468.722 },
+		{ name: "Hasretinle Yandı Gönlüm", start: 471.922, end: 727.122, fadeOutStart: 723.922 },
+		{ name: "Hatıran Yeter", start: 727.122, end: MERGED_AUDIO_DURATION_SECONDS, fadeOutStart: undefined }
+	] as const;
+	const GUEST_MESSAGE = "Fatma Ela Sarı";
+	const GUEST_TITLE_START_SECONDS = TRACKS[3].start + 7;
+	const GUEST_TITLE_END_SECONDS = GUEST_TITLE_START_SECONDS + 5;
+	const AUDIO_SOURCE = {
+		src: asset("onkasim.opus"),
+		name: "10 Kasım",
+		duration: MERGED_AUDIO_DURATION_SECONDS
+	};
+	const INTRO_VIDEO_SOURCE = import.meta.env.DEV
+		? asset("0_saygiistiklal-full.mp4")
+		: "https://mdonmez.github.io/10kasim/0_saygiistiklal-full.mp4";
 
-	let currentIndex = $state(0);
 	let isSeeking = $state(false);
 	let globalPercent = $state(0);
 	let isFullscreen = $state(false);
-	let prefersReducedMotion = $state(false);
-	let titleMode = $state<"welcome" | "track" | "ending">("welcome");
+
+	let isIntroComplete = $state(false);
+	let isIntroReady = $state(false);
+	let hasIntroStarted = $state(false);
+	let isIntroPlaying = $state(false);
+	let isIntroLoading = $state(false);
+	let introError = $state("");
+	let introVideo = $state<HTMLVideoElement>();
+	let introAudio = $state<HTMLAudioElement>();
+	let audioReady: Promise<void> = Promise.resolve();
+	let isCompletingIntro = $state(false);
+
+	let hasSelectedSection = $state(false);
 	let isPlaylistFinished = $state(false);
+	let sideControlsVisible = $state(true);
+	let sideControlsHideTimeout: number | undefined;
+	let titleHeading = $state<HTMLHeadingElement>();
+	let titleAnimation: Animation | null = null;
 
 	onMount(() => {
-		for (const track of TRACKS) {
-			audioStore.addTrackUrl(track.src, track.name, track.src, track.duration);
-		}
-
-		const prefetchController = new AbortController();
-		const prefetchTimer = window.setTimeout(() => {
-			const connection = (navigator as Navigator & {
-				connection?: { saveData?: boolean; effectiveType?: string };
-			}).connection;
-			if (connection?.saveData || connection?.effectiveType === "slow-2g" || connection?.effectiveType === "2g") {
-				return;
-			}
-
-			void (async () => {
-				// Tracks 0 and 1 are preloaded/decoded by the store as soon as they
-				// are added, so only warm the remaining files here.
-				for (let i = 2; i < TRACKS.length; i++) {
-					if (prefetchController.signal.aborted) return;
-					const track = TRACKS[i];
-					if (!track) continue;
-
-					try {
-						const response = await fetch(track.src, {
-							cache: "default",
-							signal: prefetchController.signal,
-							priority: "low"
-						} as RequestInit & { priority: "low" });
-						if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-						// Consume the body so the response lands in the HTTP cache;
-						// arrayBuffer() keeps this out of the JS hot path.
-						await response.arrayBuffer();
-					} catch (error) {
-						if (prefetchController.signal.aborted) return;
-						console.warn(`[audio] Background cache warm failed for "${track.name}"; playback will retry on demand.`, error);
-					}
-
-					if (i < TRACKS.length - 1) {
-						await new Promise((resolve) => window.setTimeout(resolve, AUDIO_PREFETCH_GAP_MS));
-					}
-				}
-			})();
-		}, AUDIO_PREFETCH_DELAY_MS);
+		audioReady = audioStore.addTrackUrl(AUDIO_SOURCE.src, AUDIO_SOURCE.name, AUDIO_SOURCE.src, AUDIO_SOURCE.duration);
+		setupIntroMedia();
 
 		const onFullscreenChange = () => {
 			isFullscreen = !!document.fullscreenElement;
 		};
 		document.addEventListener("fullscreenchange", onFullscreenChange);
 
-		const motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
-		const onMotionPreferenceChange = (event: MediaQueryListEvent) => {
-			prefersReducedMotion = event.matches;
-		};
-		prefersReducedMotion = motionPreference.matches;
-		motionPreference.addEventListener("change", onMotionPreferenceChange);
 
 		audioStore.onTrackEnd = (id: string) => {
-			const tracks = audioStore.tracks;
-			const index = tracks.findIndex((track) => track.id === id);
-			if (index === -1) return;
-
-			if (index === tracks.length - 1) {
-				titleMode = "ending";
-				isPlaylistFinished = true;
-				audioStore.pauseAll();
-				currentIndex = -1;
-				globalPercent = 100;
-				return;
-			}
-
-			const nextTrack = tracks[index + 1];
-			if (!nextTrack) return;
-
-			currentIndex = index + 1;
-			setTimeout(() => audioStore.play(nextTrack.id), 0);
+			if (id !== AUDIO_SOURCE.src) return;
+			isPlaylistFinished = true;
+			hideSideControls();
+			globalPercent = 100;
 		};
 
 		return () => {
 			audioStore.onTrackEnd = null;
-			window.clearTimeout(prefetchTimer);
-			prefetchController.abort();
+			if (sideControlsHideTimeout !== undefined) window.clearTimeout(sideControlsHideTimeout);
+			titleAnimation?.cancel();
 			document.removeEventListener("fullscreenchange", onFullscreenChange);
-			motionPreference.removeEventListener("change", onMotionPreferenceChange);
 		};
 	});
 
-	$effect(() => {
-		if (audioStore.tracks.length > 0 && currentIndex >= audioStore.tracks.length) {
-			currentIndex = 0;
+	function setupIntroMedia(): void {
+		if (!introVideo || !introAudio) return;
+
+		if (!introVideo.src) introVideo.src = INTRO_VIDEO_SOURCE;
+		if (!introAudio.src) introAudio.src = asset("0_saygiistiklal-intro.opus");
+		isIntroReady = true;
+	}
+
+	function syncIntroAudioToVideo(): void {
+		const video = introVideo;
+		const audio = introAudio;
+		if (!video || !audio || video.paused || audio.paused) return;
+
+		if (Math.abs(video.currentTime - audio.currentTime) > 0.15) {
+			audio.currentTime = video.currentTime;
 		}
+		audio.muted = false;
+	}
+
+	async function startIntro(): Promise<void> {
+		if (!introVideo || !introAudio || !isIntroReady) return;
+
+		hasIntroStarted = true;
+		introError = "";
+		isIntroLoading = true;
+		introAudio.muted = true;
+
+		try {
+			await Promise.all([introVideo.play(), introAudio.play()]);
+			scheduleSideControlsHide();
+		} catch (error) {
+			introVideo.pause();
+			introAudio.pause();
+			introAudio.muted = false;
+			isIntroLoading = false;
+			showSideControls();
+			introError = "Video veya ses başlatılamadı. Tekrar deneyebilir veya atlayabilirsiniz.";
+			console.error("[intro] Media playback failed:", error);
+		}
+	}
+
+	function toggleIntroPlayback(): void {
+		if (isIntroPlaying || isIntroLoading) {
+			introVideo?.pause();
+			introAudio?.pause();
+			isIntroLoading = false;
+			showSideControls();
+			return;
+		}
+
+		void startIntro();
+	}
+
+	async function completeIntro(): Promise<void> {
+		if (isCompletingIntro) return;
+		isCompletingIntro = true;
+		isIntroLoading = true;
+		introVideo?.pause();
+		introAudio?.pause();
+
+		try {
+			await audioReady;
+			const track = audioStore.tracks.find((item) => item.id === AUDIO_SOURCE.src);
+			if (!track) throw new Error("The presentation audio track is not ready.");
+
+			audioStore.pause(track.id);
+			audioStore.seekToStart(track.id);
+			isIntroComplete = true;
+			isIntroLoading = false;
+		} catch (error) {
+			isCompletingIntro = false;
+			isIntroLoading = false;
+			introError = "Sesli sunum başlatılamadı. Tekrar deneyebilir veya videoyu yeniden oynatabilirsiniz.";
+			console.error("[intro] Could not start presentation audio:", error);
+		}
+	}
+
+	function skipIntro(): void {
+		void completeIntro();
+	}
+
+	async function replayIntro(): Promise<void> {
+		const track = currentTrack;
+		if (track) {
+			audioStore.pause(track.id);
+			audioStore.seekToStart(track.id);
+		}
+
+		introVideo?.pause();
+		introAudio?.pause();
+		isCompletingIntro = false;
+		isPlaylistFinished = false;
+		hasSelectedSection = false;
+		globalPercent = 0;
+		showTrackTitle();
+		showSideControls();
+		hasIntroStarted = false;
+		isIntroPlaying = false;
+		isIntroLoading = false;
+		isIntroReady = false;
+		introError = "";
+		isIntroComplete = false;
+		await tick();
+
+		setupIntroMedia();
+		if (introVideo) introVideo.currentTime = 0;
+		if (introAudio) {
+			introAudio.currentTime = 0;
+			introAudio.muted = false;
+		}
+		showSideControls();
+	}
+
+	function restartIntroPlayback(): void {
+		if (!introVideo || !introAudio) return;
+
+		introVideo.pause();
+		introAudio.pause();
+		if (introVideo.readyState > 0) introVideo.currentTime = 0;
+		if (introAudio.readyState > 0) introAudio.currentTime = 0;
+		hasIntroStarted = false;
+		isIntroPlaying = false;
+		isIntroLoading = false;
+		showSideControls();
+	}
+
+	function diagonalReveal(_node: Element, { duration }: { duration: number }) {
+		return {
+			duration,
+			easing: cubicInOut,
+			css: (t: number) => {
+				const hidden = `${(1 - t) * 100}%`;
+				return `clip-path: inset(0 ${hidden} ${hidden} 0)`;
+			}
+		};
+	}
+
+	const currentTrack = $derived(audioStore.tracks[0] as TrackState | undefined);
+
+	function showSideControls(): void {
+		if (sideControlsHideTimeout !== undefined) {
+			window.clearTimeout(sideControlsHideTimeout);
+			sideControlsHideTimeout = undefined;
+		}
+		sideControlsVisible = true;
+	}
+
+	function hideSideControls(): void {
+		if (sideControlsHideTimeout !== undefined) {
+			window.clearTimeout(sideControlsHideTimeout);
+			sideControlsHideTimeout = undefined;
+		}
+		sideControlsVisible = false;
+	}
+
+	function scheduleSideControlsHide(): void {
+		if (sideControlsHideTimeout !== undefined) window.clearTimeout(sideControlsHideTimeout);
+		sideControlsVisible = true;
+		sideControlsHideTimeout = window.setTimeout(() => {
+			sideControlsVisible = false;
+			sideControlsHideTimeout = undefined;
+		}, SIDE_CONTROLS_HIDE_DELAY_MS);
+	}
+
+	const playbackPosition = $derived(currentTrack?.currentTime ?? 0);
+	const totalDuration = MERGED_AUDIO_DURATION_SECONDS;
+
+	function sectionIndexAt(time: number): number {
+		for (let i = TRACKS.length - 1; i >= 0; i--) {
+			if (time >= TRACKS[i].start) return i;
+		}
+		return 0;
+	}
+
+	const currentIndex = $derived(isPlaylistFinished ? TRACKS.length - 1 : sectionIndexAt(playbackPosition));
+	const currentSection = $derived(TRACKS[currentIndex]);
+	const hasTrackFocus = $derived(
+		!isPlaylistFinished && (currentTrack?.playing === true || playbackPosition > 0 || hasSelectedSection)
+	);
+
+	const mainText = $derived.by((): MainTextState => {
+		if (isPlaylistFinished || playbackPosition >= FINAL_MESSAGE_START_SECONDS) {
+			return { kind: "ending", text: ENDING_MESSAGE };
+		}
+
+		if (playbackPosition < WELCOME_HOLD_DURATION_SECONDS && currentIndex === 0) {
+			return { kind: "welcome", text: WELCOME_TITLE };
+		}
+
+		if (playbackPosition >= GUEST_TITLE_START_SECONDS && playbackPosition < GUEST_TITLE_END_SECONDS) {
+			return { kind: "guest", text: GUEST_MESSAGE };
+		}
+
+		return { kind: "track", text: currentSection?.name ?? WELCOME_TITLE };
 	});
+	const currentTitle = $derived(mainText.text);
+	const currentTitleState = $derived(mainText.kind);
 
-	const currentTrack = $derived(audioStore.tracks[currentIndex] as TrackState | undefined);
+	let displayedTitle = $state(WELCOME_TITLE);
+	let requestedTitle = WELCOME_TITLE;
 
-	// Decode the current and next track ahead of time, and free everything
-	// further away. Each decoded track can take 40–110 MB of RAM, so keeping
-	// the whole playlist buffered is unnecessary and risky on low-memory devices.
 	$effect(() => {
-		const index = currentIndex;
-		const tracks = audioStore.tracks;
+		const nextTitle = currentTitle;
+		const element = titleHeading;
+		const reduceMotion = prefersReducedMotion.current;
 
-		if (index < 0) {
-			// Playlist finished: keep only the last track for the "previous" action.
-			const keepId = tracks[tracks.length - 1]?.id;
-			for (const track of tracks) {
-				if (track.id !== keepId) audioStore.release(track.id);
+		if (nextTitle === requestedTitle) {
+			if (reduceMotion && titleAnimation) {
+				titleAnimation.cancel();
+				titleAnimation = null;
+				if (element) element.style.opacity = "";
+				displayedTitle = nextTitle;
 			}
 			return;
 		}
 
-		const current = tracks[index];
-		const next = tracks[index + 1];
-		if (current) audioStore.preload(current.id);
-		if (next) audioStore.preload(next.id);
-
-		for (let i = 0; i < tracks.length; i++) {
-			if (i < index || i > index + 1) {
-				const stale = tracks[i];
-				if (stale) audioStore.release(stale.id);
-			}
+		requestedTitle = nextTitle;
+		if (!element || reduceMotion) {
+			titleAnimation?.cancel();
+			titleAnimation = null;
+			if (element) element.style.opacity = "";
+			displayedTitle = nextTitle;
+			return;
 		}
+
+		const currentOpacity = Number.parseFloat(getComputedStyle(element).opacity);
+		const startOpacity = Number.isFinite(currentOpacity) ? currentOpacity : 1;
+		titleAnimation?.cancel();
+
+		const fadeOut = element.animate(
+			[{ opacity: startOpacity }, { opacity: 0 }],
+			{ duration: TITLE_FADE_DURATION_MS, easing: "ease-in-out", fill: "forwards" }
+		);
+		titleAnimation = fadeOut;
+
+		void fadeOut.finished
+			.then(() => {
+				if (requestedTitle !== nextTitle) return;
+				if (prefersReducedMotion.current) {
+					element.style.opacity = "";
+					displayedTitle = nextTitle;
+					titleAnimation = null;
+					return;
+				}
+
+				fadeOut.cancel();
+				element.style.opacity = "0";
+				displayedTitle = nextTitle;
+
+				const fadeIn = element.animate(
+					[{ opacity: 0 }, { opacity: 1 }],
+					{ duration: TITLE_FADE_DURATION_MS, easing: "ease-in-out" }
+				);
+				titleAnimation = fadeIn;
+
+				void fadeIn.finished
+					.then(() => {
+						if (titleAnimation !== fadeIn) return;
+						fadeIn.cancel();
+						element.style.opacity = "";
+						titleAnimation = null;
+					})
+					.catch(() => {});
+			})
+			.catch(() => {});
 	});
 
-	const playbackPosition = $derived.by(() => {
-		let position = 0;
-		for (let i = 0; i < currentIndex; i++) {
-			const duration = audioStore.tracks[i]?.duration;
-			if (duration !== undefined && Number.isFinite(duration) && duration > 0) {
-				position += duration;
-			}
-		}
-		const currentTime = currentTrack?.currentTime ?? 0;
-		return position + (Number.isFinite(currentTime) ? currentTime : 0);
-	});
-	const displayTitle = $derived(
-		titleMode === "ending"
-			? "Saygı, Minnet ve Özlemle..."
-			: titleMode === "welcome" && playbackPosition < WELCOME_AUDIO_DURATION_SECONDS
-				? "Hoş Geldiniz"
-				: (currentTrack?.name ?? "Hoş Geldiniz")
-	);
-	let presentedTitle = $state("Hoş Geldiniz");
-
-	$effect(() => {
-		const nextTitle = displayTitle;
-		const timeout = window.setTimeout(() => {
-			presentedTitle = nextTitle;
-		}, TITLE_UPDATE_DEBOUNCE);
-
-		return () => window.clearTimeout(timeout);
-	});
-
-	const totalDuration = $derived(
-		audioStore.tracks.reduce(
-			(sum, track) => sum + (Number.isFinite(track.duration) && track.duration > 0 ? track.duration : 0),
-			0
-		)
-	);
-
-	const cutPositions = $derived.by(() => {
-		if (totalDuration <= 0) return [];
-		let acc = 0;
-		const positions: number[] = [];
-		for (let i = 0; i < audioStore.tracks.length - 1; i++) {
-			const duration = audioStore.tracks[i].duration;
-			acc += Number.isFinite(duration) && duration > 0 ? duration : 0;
-			positions.push((acc / totalDuration) * 100);
-		}
-		return positions;
-	});
+	const cutPositions = TRACKS.slice(1).map((section) => (section.start / totalDuration) * 100);
 
 	// Sync slider position from playback when not seeking.
 	$effect(() => {
@@ -218,130 +373,81 @@
 	});
 
 	function showTrackTitle(): void {
-		if (titleMode === "ending") titleMode = "track";
 		isPlaylistFinished = false;
 	}
 
+	function focusSelectedSection(): void {
+		hasSelectedSection = true;
+	}
+
 	function handleGlobalCommit(val: number): void {
-		if (!Number.isFinite(val) || !Number.isFinite(totalDuration) || totalDuration <= 0 || audioStore.tracks.length === 0) {
+		if (!Number.isFinite(val) || totalDuration <= 0 || !currentTrack) {
 			isSeeking = false;
 			return;
 		}
 		showTrackTitle();
-		const target = (val / 100) * totalDuration;
-		let acc = 0;
-		let idx = 0;
-		let offset = 0;
-		for (let i = 0; i < audioStore.tracks.length; i++) {
-			const duration = audioStore.tracks[i].duration;
-			const d = Number.isFinite(duration) && duration > 0 ? duration : 0;
-			if (target < acc + d || i === audioStore.tracks.length - 1) {
-				idx = i;
-				offset = Math.max(0, target - acc);
-				break;
-			}
-			acc += d;
-		}
-
-		const wasPlaying = currentTrack?.playing ?? false;
-		if (currentTrack) audioStore.pause(currentTrack.id);
-		currentIndex = idx;
-		const nextTrack = audioStore.tracks[idx];
-		if (nextTrack) {
-			audioStore.seek(nextTrack.id, offset);
-			if (wasPlaying) audioStore.play(nextTrack.id);
-		}
+		focusSelectedSection();
+		audioStore.seek(currentTrack.id, (val / 100) * totalDuration);
 		isSeeking = false;
 	}
 
 	function selectTrack(index: number): void {
+		const section = TRACKS[index];
+		if (!section || !currentTrack) return;
 		showTrackTitle();
-		const current = audioStore.tracks[currentIndex];
-		if (current) audioStore.pause(current.id);
-		currentIndex = index;
+		focusSelectedSection();
+		audioStore.pause(currentTrack.id);
+		audioStore.seek(currentTrack.id, section.start);
+		showSideControls();
 	}
 
 	function handleNextTrack(): void {
-		const tracks = audioStore.tracks;
-		if (tracks.length === 0) return;
+		if (!currentTrack) return;
+		const wasFinished = isPlaylistFinished;
 		showTrackTitle();
-
-		const current = tracks[currentIndex];
-		const wasPlaying = current?.playing ?? false;
-		if (current) audioStore.pause(current.id);
-
-		const nextIndex = (currentIndex + 1) % tracks.length;
-		currentIndex = nextIndex;
-		if (wasPlaying) audioStore.play(tracks[nextIndex].id);
+		const nextIndex = wasFinished ? 0 : (currentIndex + 1) % TRACKS.length;
+		const nextSection = TRACKS[nextIndex];
+		if (!nextSection) return;
+		focusSelectedSection();
+		isPlaylistFinished = false;
+		audioStore.seek(currentTrack.id, nextSection.start);
 	}
 
 	function handlePreviousTrack(): void {
-		const tracks = audioStore.tracks;
-		const current = tracks[currentIndex];
-		if (!current) {
-			if (!isPlaylistFinished || tracks.length === 0) return;
-			showTrackTitle();
-			currentIndex = tracks.length - 1;
-			const lastTrack = tracks[currentIndex];
-			if (lastTrack) audioStore.seekToStart(lastTrack.id);
-			return;
-		}
+		if (!currentTrack) return;
+		const wasFinished = isPlaylistFinished;
 		showTrackTitle();
+		focusSelectedSection();
 
-		if (current.currentTime > PREVIOUS_TRACK_RESTART_THRESHOLD) {
-			audioStore.seekToStart(current.id);
+		if (wasFinished) {
+			isPlaylistFinished = false;
+			audioStore.seek(currentTrack.id, TRACKS[TRACKS.length - 1].start);
 			return;
 		}
 
-		const wasPlaying = current.playing;
-		audioStore.pause(current.id);
+		if (currentTrack.currentTime - (currentSection?.start ?? 0) > PREVIOUS_TRACK_RESTART_THRESHOLD) {
+			audioStore.seek(currentTrack.id, currentSection?.start ?? 0);
+			return;
+		}
 
-		const previousIndex = (currentIndex - 1 + tracks.length) % tracks.length;
-		const previousTrack = tracks[previousIndex];
-		currentIndex = previousIndex;
-		audioStore.seekToStart(previousTrack.id);
-		if (wasPlaying) audioStore.play(previousTrack.id);
+		const previousIndex = (currentIndex - 1 + TRACKS.length) % TRACKS.length;
+		const previousSection = TRACKS[previousIndex];
+		if (previousSection) audioStore.seek(currentTrack.id, previousSection.start);
 	}
 
 	function togglePlayback(): void {
-		const t = audioStore.tracks[currentIndex];
-		if (!t) {
-			const firstTrack = audioStore.tracks[0];
-			if (!isPlaylistFinished || !firstTrack) return;
-			showTrackTitle();
-			currentIndex = 0;
-			audioStore.seekToStart(firstTrack.id);
-			audioStore.play(firstTrack.id);
-			return;
-		}
+		const t = currentTrack;
+		if (!t) return;
 		showTrackTitle();
-		if (t.playing) audioStore.pause(t.id);
-		else audioStore.play(t.id);
-	}
-
-	function skipBackward(): void {
-		const t = audioStore.tracks[currentIndex];
-		if (t) {
-			showTrackTitle();
-			audioStore.seek(t.id, t.currentTime - 10);
+		if (t.playing) {
+			audioStore.pause(t.id);
+			showSideControls();
+		} else {
+			audioStore.play(t.id);
+			scheduleSideControlsHide();
 		}
 	}
 
-	function skipForward(): void {
-		const t = audioStore.tracks[currentIndex];
-		if (t) {
-			showTrackTitle();
-			audioStore.seek(t.id, t.currentTime + 10);
-		}
-	}
-
-	function seekToStart(): void {
-		const t = audioStore.tracks[currentIndex];
-		if (t) {
-			showTrackTitle();
-			audioStore.seekToStart(t.id);
-		}
-	}
 
 	async function toggleFullscreen(): Promise<void> {
 		try {
@@ -356,64 +462,240 @@
 	}
 
 	function restartAll(): void {
+		hasSelectedSection = false;
 		showTrackTitle();
-		const current = audioStore.tracks[currentIndex];
-		if (current) audioStore.pause(current.id);
-		currentIndex = 0;
-		const first = audioStore.tracks[0];
-		if (first) audioStore.seekToStart(first.id);
+		showSideControls();
+		if (currentTrack) {
+			audioStore.pause(currentTrack.id);
+			audioStore.seekToStart(currentTrack.id);
+		}
 	}
-</script>
+	</script>
 
-<div class="flex min-h-screen flex-col">
-	<header class="sticky top-0 z-50 w-full bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-		<div class="mx-auto flex h-28 max-w-[110rem] items-center justify-between px-8">
-			<img src={asset("hilal-yildiz.svg")} alt="Hilal ve yıldız" class="h-auto w-24" />
-			<h1 class="text-5xl font-extrabold tracking-tight">10.11</h1>
+<audio
+	bind:this={introAudio}
+	preload="auto"
+	aria-hidden="true"
+	class="hidden"
+	onplaying={() => {
+		isIntroPlaying = true;
+		isIntroLoading = false;
+		syncIntroAudioToVideo();
+		scheduleSideControlsHide();
+	}}
+	onwaiting={() => {
+		isIntroLoading = true;
+		showSideControls();
+	}}
+	onpause={() => {
+		isIntroPlaying = false;
+		if (!isCompletingIntro) {
+			isIntroLoading = false;
+			showSideControls();
+		}
+	}}
+	onended={() => {
+		void completeIntro();
+	}}
+	onerror={() => {
+		isIntroPlaying = false;
+		isIntroLoading = false;
+		introVideo?.pause();
+		if (introAudio) introAudio.muted = false;
+		showSideControls();
+		introError = "Ses açılamadı. Atlayarak sesli sunuma geçebilirsiniz.";
+	}}
+></audio>
+
+{#if !isIntroComplete}
+	<section
+		class="fixed inset-0 z-50 h-dvh w-full overflow-hidden bg-black text-white"
+		style="--page-gutter: clamp(1.25rem, 3vw, 3rem)"
+		in:fade={{ duration: prefersReducedMotion.current ? 0 : 360 }}
+		out:fade={{ duration: prefersReducedMotion.current ? 0 : 1800 }}
+	>
+		<video
+			bind:this={introVideo}
+			poster={asset("0_saygiistiklal-poster.jpg")}
+			preload="metadata"
+			playsinline
+			aria-label="Dalgalanan Türk bayrağı video girişi"
+			class="absolute inset-0 h-full w-full bg-black object-cover"
+			onplaying={() => {
+				isIntroPlaying = true;
+				isIntroLoading = false;
+				syncIntroAudioToVideo();
+				scheduleSideControlsHide();
+			}}
+			onwaiting={() => {
+				isIntroLoading = true;
+				if (introAudio) introAudio.muted = true;
+				showSideControls();
+			}}
+			onpause={() => {
+				isIntroPlaying = false;
+				if (!isCompletingIntro) isIntroLoading = false;
+			}}
+			onerror={() => {
+				isIntroPlaying = false;
+				isIntroLoading = false;
+				introAudio?.pause();
+				if (introAudio) introAudio.muted = false;
+				showSideControls();
+				introError = "Video yüklenemedi. Atlayarak sesli sunuma geçebilirsiniz.";
+			}}
+		></video>
+
+		<div class="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/35 via-transparent to-black/40"></div>
+		<div class="pointer-events-none absolute inset-0">
+
+			<footer
+				class="absolute inset-x-0 bottom-[var(--page-gutter)] grid grid-cols-[1fr_auto_1fr] items-center px-[var(--page-gutter)]"
+			>
+				<div
+					class="flex items-center gap-2 justify-self-start transition-opacity duration-500 ease-out motion-reduce:transition-none {!sideControlsVisible ? 'pointer-events-none opacity-0' : 'opacity-100'}"
+					inert={!sideControlsVisible}
+				>
+					<Button
+						size="icon"
+						variant="ghost"
+						class="pointer-events-auto touch-manipulation"
+						aria-label="Videoyu başa sar"
+						title="Başa sar"
+						disabled={!isIntroReady || isCompletingIntro}
+						onclick={restartIntroPlayback}
+					>
+						<IterationCw />
+					</Button>
+					<Button
+						size="icon"
+						variant="ghost"
+						class="pointer-events-auto touch-manipulation"
+						aria-label="Videoyu atla"
+						disabled={isCompletingIntro}
+						onclick={skipIntro}
+					>
+						<SkipForward />
+					</Button>
+				</div>
+				<Button
+					size="icon-lg"
+					variant={sideControlsVisible ? "secondary" : "ghost"}
+					class="pointer-events-auto touch-manipulation transition-all duration-500 ease-out motion-reduce:transition-none"
+					aria-label={isIntroPlaying ? "Videoyu duraklat" : hasIntroStarted ? "Videoyu sürdür" : "Videoyu başlat"}
+					disabled={!isIntroReady || isCompletingIntro}
+					onclick={toggleIntroPlayback}
+				>
+					{#if isIntroPlaying}
+						<Pause />
+					{:else}
+						<Play />
+					{/if}
+				</Button>
+				<div
+					class="justify-self-end transition-opacity duration-500 ease-out motion-reduce:transition-none {!sideControlsVisible ? 'pointer-events-none opacity-0' : 'opacity-100'}"
+					inert={!sideControlsVisible}
+				>
+					<Button
+						size="icon"
+						variant="ghost"
+						class="pointer-events-auto touch-manipulation"
+						aria-label={isFullscreen ? "Tam ekrandan çık" : "Tam ekran"}
+						aria-pressed={isFullscreen}
+						onclick={toggleFullscreen}
+					>
+						{#if isFullscreen}
+							<Shrink />
+						{:else}
+							<Expand />
+						{/if}
+					</Button>
+				</div>
+			</footer>
+
+			{#if !isIntroReady || isIntroLoading}
+				<p class="sr-only" role="status">
+					{isIntroReady ? "Video yükleniyor" : "Video oynatıcı hazırlanıyor"}
+				</p>
+			{/if}
+			{#if introError}
+				<p
+					class="pointer-events-auto absolute inset-x-4 bottom-20 mx-auto w-fit max-w-xl rounded-lg bg-black/75 px-4 py-2 text-center text-sm text-white"
+					role="alert"
+				>
+					{introError}
+				</p>
+			{/if}
+		</div>
+	</section>
+{:else}
+<div
+	class="flex min-h-screen flex-col p-[var(--page-gutter)]"
+	style="--page-gutter: clamp(1.25rem, 3vw, 3rem); --display-size: clamp(3rem, 5.5vw, 7rem)"
+	in:diagonalReveal={{ duration: prefersReducedMotion.current ? 0 : 1800 }}
+	out:fade={{ duration: prefersReducedMotion.current ? 0 : 360 }}
+>
+	<header class="sticky top-[var(--page-gutter)] z-50 w-full bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+		<div class="flex h-28 w-full items-start justify-between">
+			<img
+				src={asset("hilal-yildiz.svg")}
+				alt="Hilal ve yıldız"
+				class="w-auto"
+				style:height="var(--display-size)"
+			/>
+			<h1
+				class="leading-none font-extrabold tracking-tight"
+				style:font-size="var(--display-size)"
+			>
+				10.11
+			</h1>
 		</div>
 	</header>
 
-	<main class="relative mx-auto flex w-full max-w-[110rem] flex-1 flex-col justify-end px-8 pb-0 pt-8">
+	<main class="relative mx-auto flex w-full max-w-[106rem] flex-1 flex-col justify-end">
 
 		<div
 			aria-hidden="true"
-			class="pointer-events-none absolute left-1/2 top-[32%] z-0 h-[min(64vh,44rem)] aspect-[9/16] -translate-x-1/2 -translate-y-1/2 overflow-hidden"
+			class="pointer-events-none absolute left-1/2 top-[36%] z-0 h-[min(78vh,54rem)] aspect-[9/16] -translate-x-1/2 -translate-y-1/2 overflow-hidden"
 		>
 			<img src={asset("newfoto.jpg")} alt="" class="h-full w-full object-contain" />
 			<div class="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-b from-transparent via-black/60 to-black"></div>
 		</div>
-		<div class="relative z-10 w-full py-8">
-			{#if presentedTitle}
-				<div class="mb-6 grid place-items-center">
-					{#key presentedTitle}
-						<h2
-							class="col-start-1 row-start-1 w-full -translate-y-6 text-center text-5xl font-extrabold tracking-tight"
-							in:fade={{ duration: prefersReducedMotion ? 0 : TITLE_TRANSITION_DURATION, easing: cubicOut }}
-							out:fade={{ duration: prefersReducedMotion ? 0 : TITLE_TRANSITION_DURATION, easing: cubicOut }}
-						>
-							{presentedTitle}
-						</h2>
-					{/key}
-				</div>
-			{/if}
+		<div class="relative z-10 w-full">
+			<div class="mb-6 grid min-h-24 place-items-center px-2 text-center sm:min-h-28">
+				<h2
+					bind:this={titleHeading}
+					class="max-w-6xl leading-tight font-extrabold tracking-tight"
+					style:font-size="var(--display-size)"
+					aria-live="polite"
+					aria-atomic="true"
+					data-main-text-state={currentTitleState}
+				>
+					{displayedTitle}
+				</h2>
+			</div>
 
 			{#if audioStore.tracks.length > 0}
 				<div class="mb-2 flex w-full">
-					{#each audioStore.tracks as track, i (track.id)}
+					{#each TRACKS as section, i (section.name)}
 						<button
 							type="button"
-							class="truncate px-1 text-center text-xs transition-[color,opacity] duration-400 ease-out {i === currentIndex ? 'font-semibold text-foreground opacity-100' : 'text-muted-foreground opacity-60 hover:text-foreground hover:opacity-100'}"
-							style="flex: {Number.isFinite(track.duration) && track.duration > 0 ? track.duration : 1} 1 0%"
+							class="touch-manipulation truncate px-1 text-center text-xs transition-[color,opacity] duration-300 ease-in-out {hasTrackFocus && i === currentIndex ? 'font-semibold text-foreground opacity-100' : 'text-muted-foreground opacity-60 hover:text-foreground hover:opacity-100'}"
+							style="flex: {section.end - section.start} 1 0%"
+							title={section.name}
+							aria-label={`Seek to ${section.name}`}
+							aria-pressed={hasTrackFocus && i === currentIndex}
 							onclick={() => selectTrack(i)}
 						>
-							{track.name}
+							{section.name}
 						</button>
 					{/each}
 				</div>
 			{/if}
-
 			<Slider
 				type="single"
+				aria-label="Çalma konumu"
+				disabled={!currentTrack}
 				max={100}
 				step={0.1}
 				class="mb-6 w-full"
@@ -423,57 +705,86 @@
 				onpointerdown={() => {
 					isSeeking = true;
 				}}
+				onpointercancel={() => {
+					isSeeking = false;
+				}}
 			/>
 
-			<div class="relative mt-2 flex items-center justify-center">
-				<div class="absolute left-0 flex items-center gap-2">
-					<Button size="icon-xs" variant="outline" onclick={restartAll} aria-label="Tümünü başa sar">
-						<IterationCw />
+			<div class="relative mt-2 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
+				<div
+					class="relative flex items-center gap-1 transition-opacity duration-500 ease-out motion-reduce:transition-none sm:absolute sm:left-0 {!sideControlsVisible ? 'pointer-events-none opacity-0' : 'opacity-100'}"
+					inert={!sideControlsVisible}
+				>
+					<Button size="sm" variant="outline" class="touch-manipulation" onclick={restartAll} disabled={!currentTrack}>
+						<IterationCw data-icon="inline-start" />
+						Sar
 					</Button>
 					<Button
-						size="icon-xs"
+						size="sm"
 						variant="outline"
+						class="touch-manipulation"
 						onclick={handlePreviousTrack}
-						aria-label="Önceki parça veya başa sar"
-						title="3 saniyeden fazla çaldıysa başa sar, aksi halde önceki parçaya geç"
+						disabled={!currentTrack}
+						title="3 saniyeden fazla çaldıysa mevcut parçayı başa sar, aksi halde önceki parçaya geç"
 					>
-						<ArrowLeftFromLine />
+						<ArrowLeftFromLine data-icon="inline-start" />
+						Önceki
 					</Button>
 					<Button
-						size="icon-xs"
+						size="sm"
 						variant="outline"
+						class="touch-manipulation"
 						onclick={handleNextTrack}
-						aria-label="Sonraki parça"
-						disabled={audioStore.tracks.length === 0}
+						disabled={!currentTrack}
 					>
-						<ArrowRightFromLine />
+						<ArrowRightFromLine data-icon="inline-start" />
+						Sonraki
 					</Button>
 				</div>
-				<div class="flex items-center justify-center gap-4">
-					<Button size="icon-lg" variant="ghost" onclick={skipBackward} aria-label="Geri sar">
-						<StepBack />
-					</Button>
-					<Button size="icon-lg" onclick={togglePlayback}>
-						{#if currentTrack?.playing}
+				<div class="flex items-center justify-center">
+					<Button
+						size="icon-lg"
+						variant={sideControlsVisible ? "secondary" : "ghost"}
+						class="touch-manipulation transition-all duration-500 ease-out motion-reduce:transition-none"
+						aria-label={isPlaylistFinished ? "Başa sar" : currentTrack?.playing ? "Duraklat" : "Oynat"}
+						disabled={!currentTrack}
+						onclick={isPlaylistFinished ? restartAll : togglePlayback}
+					>
+						{#if isPlaylistFinished}
+							<Undo2 />
+						{:else if currentTrack?.playing}
 							<Pause />
 						{:else}
 							<Play />
 						{/if}
 					</Button>
-					<Button size="icon-lg" variant="ghost" onclick={skipForward} aria-label="İleri sar">
-						<StepForward />
-					</Button>
 				</div>
-				<div class="absolute right-0">
-					<Button size="icon-xs" variant="outline" onclick={toggleFullscreen} aria-label="Tam ekran">
+				<div
+					class="relative flex items-center gap-1 transition-opacity duration-500 ease-out motion-reduce:transition-none sm:absolute sm:right-0 {!sideControlsVisible ? 'pointer-events-none opacity-0' : 'opacity-100'}"
+					inert={!sideControlsVisible}
+				>
+					<Button
+						size="sm"
+						variant="outline"
+						class="touch-manipulation"
+						aria-label="Saygı duruşu ve İstiklal Marşı'nı yeniden başlat"
+						title="Saygı duruşu ve İstiklal Marşı'nı yeniden başlat"
+						onclick={replayIntro}
+					>
+						<Drum data-icon="inline-start" />
+						Marş
+					</Button>
+					<Button size="sm" variant="outline" class="touch-manipulation" onclick={toggleFullscreen}>
 						{#if isFullscreen}
-							<Shrink />
+							<Shrink data-icon="inline-start" />
 						{:else}
-							<Expand />
+							<Expand data-icon="inline-start" />
 						{/if}
+						Tam Ekran
 					</Button>
 				</div>
 			</div>
 		</div>
 	</main>
-</div>
+	</div>
+{/if}
