@@ -33,7 +33,6 @@ npm-debug.log*
 bun-debug.log*
 
 # Generated offline release artifacts
-/10kasim-offline.zip
 /final10kasim.zip
 /.offline-release-stage/
 

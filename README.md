@@ -21,6 +21,6 @@ bun run check
 
 - `bun run build` builds the default Cloudflare deployment.
 - GitHub Pages is built in CI with `GITHUB_PAGES=true` and the Pages base path.
-- `bun run build:offline` creates `10kasim-offline.zip` for offline use.
+- `bun run build:offline` creates `final10kasim.zip` for offline use.
 
 Extract the offline ZIP, keep its folder structure intact, and open `10kasim-offline/index.html` in Firefox ESR. It does not require a local server or internet connection. If playback does not start, verify that extraction completed and reopen the HTML file.

@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 const root = process.cwd();
 const buildDir = resolve(root, 'build');
 const stagingDir = resolve(root, '.offline-release-stage');
-const zipPath = resolve(root, '10kasim-offline.zip');
+const zipPath = resolve(root, 'final10kasim.zip');
 const mediaFiles = ['onkasim.opus', 'siirvideosu.webm'];
 const sourceHtmlPath = join(buildDir, 'index.html');
 
