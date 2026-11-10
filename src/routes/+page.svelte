@@ -1,12 +1,10 @@
 <script lang="ts">
-	import { onMount, tick } from "svelte";
+	import { onMount } from "svelte";
 	import { cubicInOut } from "svelte/easing";
 	import { fade } from "svelte/transition";
-
-	import { prefersReducedMotion } from "svelte/motion";
 	import { asset } from "$app/paths";
 
-	import { ArrowLeftFromLine, ArrowRightFromLine, Drum, Expand, IterationCw, Pause, Play, Shrink, SkipForward, Undo2 } from "@lucide/svelte";
+	import { ArrowLeftFromLine, ArrowRightFromLine, ClefTreble, Expand, Feather, IterationCw, Pause, Play, Shrink, Undo2 } from "@lucide/svelte";
 	import { Button } from "#lib/components/ui/button";
 	import { ProSlider as Slider } from "#lib/components/ui/proslider";
 	import { audioStore, type TrackState } from "#lib/audio.svelte.js";
@@ -14,10 +12,11 @@
 	const PREVIOUS_TRACK_RESTART_THRESHOLD = 3;
 	const WELCOME_HOLD_DURATION_SECONDS = 7;
 	const SIDE_CONTROLS_HIDE_DELAY_MS = 5000;
+	const INTRO_END_FADE_DURATION_MS = 750;
 	const TITLE_FADE_DURATION_MS = 1000;
 	const MERGED_AUDIO_DURATION_SECONDS = 943.248667;
 	const FINAL_MESSAGE_START_SECONDS = MERGED_AUDIO_DURATION_SECONDS - WELCOME_HOLD_DURATION_SECONDS;
-	const WELCOME_TITLE = "Hoş Geldiniz";
+	const WELCOME_TITLE = "Sonsuzluk";
 	const ENDING_MESSAGE = "Saygı, Minnet ve Özlemle";
 	type MainTextState = {
 		kind: "welcome" | "track" | "guest" | "ending";
@@ -34,14 +33,22 @@
 	const GUEST_TITLE_START_SECONDS = TRACKS[3].start + 7;
 	const GUEST_TITLE_END_SECONDS = GUEST_TITLE_START_SECONDS + 5;
 	const MEDIA_BASE_URL = "https://mdonmez.github.io/10kasim/";
+	const staticAsset = (filename: Parameters<typeof asset>[0]) =>
+		__OFFLINE_BUILD__ ? `./${filename}` : asset(filename);
 	const mediaAsset = (filename: Parameters<typeof asset>[0]) =>
-		import.meta.env.DEV ? asset(filename) : `${MEDIA_BASE_URL}${filename}`;
+		__OFFLINE_BUILD__
+			? `./media/${filename}`
+			: import.meta.env.DEV
+				? asset(filename)
+				: `${MEDIA_BASE_URL}${filename}`;
 	const AUDIO_SOURCE = {
 		src: mediaAsset("onkasim.opus"),
 		name: "10 Kasım",
 		duration: MERGED_AUDIO_DURATION_SECONDS
 	};
-	const INTRO_VIDEO_SOURCE = mediaAsset("0_saygiistiklal-full.mp4");
+	const INTRO_VIDEO_SOURCE = mediaAsset("siirvideosu.webm");
+	const PORTRAIT_FRAME_CLASS =
+		"fixed left-1/2 top-1/2 h-[min(78vh,54rem)] aspect-[9/16] -translate-x-1/2 -translate-y-1/2";
 
 	let isSeeking = $state(false);
 	let globalPercent = $state(0);
@@ -51,10 +58,14 @@
 	let isIntroReady = $state(false);
 	let hasIntroStarted = $state(false);
 	let isIntroPlaying = $state(false);
+	let isIntroCoverVisible = $state(true);
+	let isIntroCoverAnimating = $state(false);
+	let isIntroVideoVisible = $state(false);
+	let isMainPortraitVisible = $state(false);
 	let isIntroLoading = $state(false);
 	let introError = $state("");
 	let introVideo = $state<HTMLVideoElement>();
-	let introAudio = $state<HTMLAudioElement>();
+	let introFadeFrame: number | undefined;
 	let audioReady: Promise<void> = Promise.resolve();
 	let isCompletingIntro = $state(false);
 
@@ -67,7 +78,9 @@
 
 	onMount(() => {
 		audioReady = audioStore.addTrackUrl(AUDIO_SOURCE.src, AUDIO_SOURCE.name, AUDIO_SOURCE.src, AUDIO_SOURCE.duration);
-		setupIntroMedia();
+		if (introVideo?.readyState && introVideo.readyState >= HTMLMediaElement.HAVE_METADATA) {
+			isIntroReady = true;
+		}
 
 		const onFullscreenChange = () => {
 			isFullscreen = !!document.fullscreenElement;
@@ -85,70 +98,121 @@
 		return () => {
 			audioStore.onTrackEnd = null;
 			if (sideControlsHideTimeout !== undefined) window.clearTimeout(sideControlsHideTimeout);
+			stopIntroEndFade();
 			titleAnimation?.cancel();
 			document.removeEventListener("fullscreenchange", onFullscreenChange);
 		};
 	});
 
-	function setupIntroMedia(): void {
-		if (!introVideo || !introAudio) return;
 
-		if (!introVideo.src) introVideo.src = INTRO_VIDEO_SOURCE;
-		if (!introAudio.src) introAudio.src = mediaAsset("0_saygiistiklal-intro.opus");
-		isIntroReady = true;
-	}
-
-	function syncIntroAudioToVideo(): void {
-		const video = introVideo;
-		const audio = introAudio;
-		if (!video || !audio || video.paused || audio.paused) return;
-
-		if (Math.abs(video.currentTime - audio.currentTime) > 0.15) {
-			audio.currentTime = video.currentTime;
-		}
-		audio.muted = false;
-	}
-
-	async function startIntro(): Promise<void> {
-		if (!introVideo || !introAudio || !isIntroReady) return;
+	function startIntro(): void {
+		if (!introVideo || !isIntroReady || isIntroCoverAnimating) return;
 
 		hasIntroStarted = true;
 		introError = "";
+		showSideControls();
+
+		if (isIntroCoverVisible) {
+			isIntroLoading = true;
+			isIntroCoverAnimating = true;
+			isIntroCoverVisible = false;
+			return;
+		}
+
+		void playIntroVideo();
+	}
+
+	async function playIntroVideo(): Promise<void> {
+		if (!introVideo || !isIntroReady || isIntroComplete || isCompletingIntro) return;
+
+		isIntroCoverAnimating = false;
 		isIntroLoading = true;
-		introAudio.muted = true;
 
 		try {
-			await Promise.all([introVideo.play(), introAudio.play()]);
+			await introVideo.play();
+			if (isIntroComplete || isCompletingIntro) return;
 			scheduleSideControlsHide();
 		} catch (error) {
+			if (isIntroComplete || isCompletingIntro) return;
 			introVideo.pause();
-			introAudio.pause();
-			introAudio.muted = false;
+			isIntroCoverAnimating = false;
 			isIntroLoading = false;
 			showSideControls();
-			introError = "Video veya ses başlatılamadı. Tekrar deneyebilir veya atlayabilirsiniz.";
+
+			if (error instanceof Error && error.name === "AbortError") {
+				if (!isIntroVideoVisible) {
+					hasIntroStarted = false;
+					isIntroCoverVisible = true;
+				}
+				return;
+			}
+
+			if (!isIntroVideoVisible) {
+				hasIntroStarted = false;
+				isIntroCoverVisible = true;
+			}
+			introError = "Video oynatılamadı. Tekrar deneyebilir veya anma bölümüne geçebilirsiniz.";
 			console.error("[intro] Media playback failed:", error);
 		}
 	}
 
+	function handleIntroCoverTransitionEnd(event: TransitionEvent): void {
+		if (
+			!isIntroCoverAnimating ||
+			event.target !== event.currentTarget ||
+			event.propertyName !== "opacity"
+		) return;
+
+		void playIntroVideo();
+	}
+
 	function toggleIntroPlayback(): void {
+		if (isIntroCoverAnimating) return;
+
 		if (isIntroPlaying || isIntroLoading) {
 			introVideo?.pause();
-			introAudio?.pause();
 			isIntroLoading = false;
 			showSideControls();
 			return;
 		}
 
-		void startIntro();
+		startIntro();
+	}
+
+	function stopIntroEndFade(): void {
+		if (introFadeFrame !== undefined) cancelAnimationFrame(introFadeFrame);
+		introFadeFrame = undefined;
+	}
+
+	function syncIntroEndFade(): void {
+		stopIntroEndFade();
+		const video = introVideo;
+		if (!video || video.paused || video.ended) return;
+
+		const remainingMs = (video.duration - video.currentTime) * 1000;
+		const progress = Number.isFinite(remainingMs)
+			? Math.min(1, Math.max(0, 1 - remainingMs / INTRO_END_FADE_DURATION_MS))
+			: 0;
+		video.style.opacity = progress > 0 ? String(1 - progress) : "";
+		video.volume = 1 - progress;
+		introFadeFrame = requestAnimationFrame(syncIntroEndFade);
+	}
+
+	function resetIntroEndFade(): void {
+		stopIntroEndFade();
+		if (!introVideo) return;
+		introVideo.style.opacity = "";
+		introVideo.volume = 1;
 	}
 
 	async function completeIntro(): Promise<void> {
-		if (isCompletingIntro) return;
+		if (isCompletingIntro || isIntroComplete) return;
 		isCompletingIntro = true;
 		isIntroLoading = true;
+		isIntroCoverAnimating = false;
 		introVideo?.pause();
-		introAudio?.pause();
+		isIntroPlaying = false;
+		showSideControls();
 
 		try {
 			await audioReady;
@@ -157,11 +221,14 @@
 
 			audioStore.pause(track.id);
 			audioStore.seekToStart(track.id);
+			isMainPortraitVisible = true;
 			isIntroComplete = true;
 			isIntroLoading = false;
+			isCompletingIntro = false;
 		} catch (error) {
 			isCompletingIntro = false;
 			isIntroLoading = false;
+			if (!isIntroVideoVisible && !isIntroCoverVisible) isIntroCoverVisible = true;
 			introError = "Sesli sunum başlatılamadı. Tekrar deneyebilir veya videoyu yeniden oynatabilirsiniz.";
 			console.error("[intro] Could not start presentation audio:", error);
 		}
@@ -171,48 +238,47 @@
 		void completeIntro();
 	}
 
-	async function replayIntro(): Promise<void> {
+	function replayIntro(): void {
 		const track = currentTrack;
-		if (track) {
-			audioStore.pause(track.id);
-			audioStore.seekToStart(track.id);
-		}
+		if (!track || isCompletingIntro) return;
 
+		audioStore.pause(track.id);
+		audioStore.seekToStart(track.id);
 		introVideo?.pause();
-		introAudio?.pause();
-		isCompletingIntro = false;
-		isPlaylistFinished = false;
+		if (introVideo?.readyState) introVideo.currentTime = 0;
+		resetIntroEndFade();
+
 		hasSelectedSection = false;
+		isPlaylistFinished = false;
 		globalPercent = 0;
-		showTrackTitle();
-		showSideControls();
+		isIntroComplete = false;
+		isMainPortraitVisible = false;
 		hasIntroStarted = false;
 		isIntroPlaying = false;
+		isIntroCoverVisible = true;
+		isIntroCoverAnimating = false;
+		isIntroVideoVisible = false;
 		isIntroLoading = false;
 		isIntroReady = false;
 		introError = "";
-		isIntroComplete = false;
-		await tick();
-
-		setupIntroMedia();
-		if (introVideo) introVideo.currentTime = 0;
-		if (introAudio) {
-			introAudio.currentTime = 0;
-			introAudio.muted = false;
-		}
+		showTrackTitle();
 		showSideControls();
 	}
 
 	function restartIntroPlayback(): void {
-		if (!introVideo || !introAudio) return;
+		if (!introVideo) return;
 
 		introVideo.pause();
-		introAudio.pause();
 		if (introVideo.readyState > 0) introVideo.currentTime = 0;
-		if (introAudio.readyState > 0) introAudio.currentTime = 0;
+		resetIntroEndFade();
+		isMainPortraitVisible = false;
 		hasIntroStarted = false;
 		isIntroPlaying = false;
+		isIntroCoverVisible = true;
+		isIntroCoverAnimating = false;
+		isIntroVideoVisible = false;
 		isIntroLoading = false;
+		introError = "";
 		showSideControls();
 	}
 
@@ -294,23 +360,12 @@
 	$effect(() => {
 		const nextTitle = currentTitle;
 		const element = titleHeading;
-		const reduceMotion = prefersReducedMotion.current;
-
-		if (nextTitle === requestedTitle) {
-			if (reduceMotion && titleAnimation) {
-				titleAnimation.cancel();
-				titleAnimation = null;
-				if (element) element.style.opacity = "";
-				displayedTitle = nextTitle;
-			}
-			return;
-		}
+		if (nextTitle === requestedTitle) return;
 
 		requestedTitle = nextTitle;
-		if (!element || reduceMotion) {
+		if (!element) {
 			titleAnimation?.cancel();
 			titleAnimation = null;
-			if (element) element.style.opacity = "";
 			displayedTitle = nextTitle;
 			return;
 		}
@@ -328,12 +383,6 @@
 		void fadeOut.finished
 			.then(() => {
 				if (requestedTitle !== nextTitle) return;
-				if (prefersReducedMotion.current) {
-					element.style.opacity = "";
-					displayedTitle = nextTitle;
-					titleAnimation = null;
-					return;
-				}
 
 				fadeOut.cancel();
 				element.style.opacity = "0";
@@ -473,173 +522,91 @@
 	}
 	</script>
 
-<audio
-	bind:this={introAudio}
-	preload="auto"
-	aria-hidden="true"
-	class="hidden"
-	onplaying={() => {
-		isIntroPlaying = true;
-		isIntroLoading = false;
-		syncIntroAudioToVideo();
-		scheduleSideControlsHide();
-	}}
-	onwaiting={() => {
-		isIntroLoading = true;
-		showSideControls();
-	}}
-	onpause={() => {
-		isIntroPlaying = false;
-		if (!isCompletingIntro) {
-			isIntroLoading = false;
-			showSideControls();
-		}
-	}}
-	onended={() => {
-		void completeIntro();
-	}}
-	onerror={() => {
-		isIntroPlaying = false;
-		isIntroLoading = false;
-		introVideo?.pause();
-		if (introAudio) introAudio.muted = false;
-		showSideControls();
-		introError = "Ses açılamadı. Atlayarak sesli sunuma geçebilirsiniz.";
-	}}
-></audio>
 
 {#if !isIntroComplete}
 	<section
 		class="fixed inset-0 z-50 h-dvh w-full overflow-hidden bg-black text-white"
 		style="--page-gutter: clamp(1.25rem, 3vw, 3rem)"
-		in:fade={{ duration: prefersReducedMotion.current ? 0 : 360 }}
-		out:fade={{ duration: prefersReducedMotion.current ? 0 : 1800 }}
+		in:fade={{ duration: 360 }}
+		out:fade={{ duration: 1800 }}
 	>
+		<!-- The source clip has no caption file; avoid fabricating subtitles for the poem. -->
+		<!-- svelte-ignore a11y_media_has_caption -->
 		<video
 			bind:this={introVideo}
-			poster={asset("0_saygiistiklal-poster.jpg")}
+			src={INTRO_VIDEO_SOURCE}
 			preload="metadata"
 			playsinline
-			aria-label="Dalgalanan Türk bayrağı video girişi"
-			class="absolute inset-0 h-full w-full bg-black object-cover"
+			aria-label="10 Kasım şiir videosu"
+			class="absolute inset-0 h-full w-full bg-black object-cover {isIntroVideoVisible ? 'opacity-100' : 'opacity-0'}"
+			onloadedmetadata={() => {
+				isIntroReady = true;
+			}}
 			onplaying={() => {
+				if (isIntroComplete || isCompletingIntro) {
+					introVideo?.pause();
+					return;
+				}
 				isIntroPlaying = true;
+				isIntroVideoVisible = true;
 				isIntroLoading = false;
-				syncIntroAudioToVideo();
+				syncIntroEndFade();
 				scheduleSideControlsHide();
 			}}
 			onwaiting={() => {
+				if (isIntroComplete || isCompletingIntro) return;
 				isIntroLoading = true;
-				if (introAudio) introAudio.muted = true;
 				showSideControls();
 			}}
 			onpause={() => {
 				isIntroPlaying = false;
+				stopIntroEndFade();
 				if (!isCompletingIntro) isIntroLoading = false;
 			}}
 			onerror={() => {
+				isIntroReady = false;
+				hasIntroStarted = false;
 				isIntroPlaying = false;
+				isIntroCoverVisible = true;
+				isIntroCoverAnimating = false;
+				isIntroVideoVisible = false;
 				isIntroLoading = false;
-				introAudio?.pause();
-				if (introAudio) introAudio.muted = false;
 				showSideControls();
-				introError = "Video yüklenemedi. Atlayarak sesli sunuma geçebilirsiniz.";
+				introError = "Video yüklenemedi. Anma bölümüne geçebilirsiniz.";
+			}}
+			onended={() => {
+				stopIntroEndFade();
+				if (introVideo) {
+					introVideo.style.opacity = "0";
+					introVideo.volume = 0;
+				}
+				void completeIntro();
 			}}
 		></video>
 
-		<div class="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/35 via-transparent to-black/40"></div>
+
 		<div class="pointer-events-none absolute inset-0">
 
-			<footer
-				class="absolute inset-x-0 bottom-[var(--page-gutter)] grid grid-cols-[1fr_auto_1fr] items-center px-[var(--page-gutter)]"
-			>
-				<div
-					class="flex items-center gap-2 justify-self-start transition-opacity duration-500 ease-out motion-reduce:transition-none {!sideControlsVisible ? 'pointer-events-none opacity-0' : 'opacity-100'}"
-					inert={!sideControlsVisible}
-				>
-					<Button
-						size="icon"
-						variant="ghost"
-						class="pointer-events-auto touch-manipulation"
-						aria-label="Videoyu başa sar"
-						title="Başa sar"
-						disabled={!isIntroReady || isCompletingIntro}
-						onclick={restartIntroPlayback}
-					>
-						<IterationCw />
-					</Button>
-					<Button
-						size="icon"
-						variant="ghost"
-						class="pointer-events-auto touch-manipulation"
-						aria-label="Videoyu atla"
-						disabled={isCompletingIntro}
-						onclick={skipIntro}
-					>
-						<SkipForward />
-					</Button>
-				</div>
-				<Button
-					size="icon-lg"
-					variant={sideControlsVisible ? "secondary" : "ghost"}
-					class="pointer-events-auto touch-manipulation transition-all duration-500 ease-out motion-reduce:transition-none"
-					aria-label={isIntroPlaying ? "Videoyu duraklat" : hasIntroStarted ? "Videoyu sürdür" : "Videoyu başlat"}
-					disabled={!isIntroReady || isCompletingIntro}
-					onclick={toggleIntroPlayback}
-				>
-					{#if isIntroPlaying}
-						<Pause />
-					{:else}
-						<Play />
-					{/if}
-				</Button>
-				<div
-					class="justify-self-end transition-opacity duration-500 ease-out motion-reduce:transition-none {!sideControlsVisible ? 'pointer-events-none opacity-0' : 'opacity-100'}"
-					inert={!sideControlsVisible}
-				>
-					<Button
-						size="icon"
-						variant="ghost"
-						class="pointer-events-auto touch-manipulation"
-						aria-label={isFullscreen ? "Tam ekrandan çık" : "Tam ekran"}
-						aria-pressed={isFullscreen}
-						onclick={toggleFullscreen}
-					>
-						{#if isFullscreen}
-							<Shrink />
-						{:else}
-							<Expand />
-						{/if}
-					</Button>
-				</div>
-			</footer>
 
 			{#if !isIntroReady || isIntroLoading}
 				<p class="sr-only" role="status">
 					{isIntroReady ? "Video yükleniyor" : "Video oynatıcı hazırlanıyor"}
 				</p>
 			{/if}
-			{#if introError}
-				<p
-					class="pointer-events-auto absolute inset-x-4 bottom-20 mx-auto w-fit max-w-xl rounded-lg bg-black/75 px-4 py-2 text-center text-sm text-white"
-					role="alert"
-				>
-					{introError}
-				</p>
-			{/if}
+
 		</div>
 	</section>
 {:else}
 <div
-	class="flex min-h-screen flex-col p-[var(--page-gutter)]"
+	class="relative z-[60] flex min-h-screen flex-col p-[var(--page-gutter)]"
 	style="--page-gutter: clamp(1.25rem, 3vw, 3rem); --display-size: clamp(3rem, 5.5vw, 7rem)"
-	in:diagonalReveal={{ duration: prefersReducedMotion.current ? 0 : 1800 }}
-	out:fade={{ duration: prefersReducedMotion.current ? 0 : 360 }}
+	in:diagonalReveal={{ duration: 1800 }}
+	out:fade={{ duration: 360 }}
 >
 	<header class="sticky top-[var(--page-gutter)] z-50 w-full bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
 		<div class="flex h-28 w-full items-start justify-between">
 			<img
-				src={asset("hilal-yildiz.svg")}
+				src={staticAsset("hilal-yildiz.svg")}
 				alt="Hilal ve yıldız"
 				class="w-auto"
 				style:height="var(--display-size)"
@@ -655,24 +622,26 @@
 
 	<main class="relative mx-auto flex w-full max-w-[106rem] flex-1 flex-col justify-end">
 
-		<div
-			aria-hidden="true"
-			class="pointer-events-none absolute left-1/2 top-[36%] z-0 h-[min(78vh,54rem)] aspect-[9/16] -translate-x-1/2 -translate-y-1/2 overflow-hidden"
-		>
-			<img src={asset("newfoto.jpg")} alt="" class="h-full w-full object-contain" />
-			<div class="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-b from-transparent via-black/60 to-black"></div>
-		</div>
+
 		<div class="relative z-10 w-full">
 			<div class="mb-6 grid min-h-24 place-items-center px-2 text-center sm:min-h-28">
 				<h2
 					bind:this={titleHeading}
-					class="max-w-6xl leading-tight font-extrabold tracking-tight"
+					class="w-full max-w-[100rem] leading-tight font-extrabold tracking-tight"
 					style:font-size="var(--display-size)"
 					aria-live="polite"
 					aria-atomic="true"
 					data-main-text-state={currentTitleState}
 				>
-					{displayedTitle}
+					{#if displayedTitle === WELCOME_TITLE}
+						<img
+							src={staticAsset("infinity.svg")}
+							alt={WELCOME_TITLE}
+							class="mx-auto h-[0.9em] w-auto brightness-0 invert"
+						/>
+					{:else}
+						{displayedTitle}
+					{/if}
 				</h2>
 			</div>
 
@@ -711,81 +680,181 @@
 				}}
 			/>
 
-			<div class="relative mt-2 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
-				<div
-					class="relative flex items-center gap-1 transition-opacity duration-500 ease-out motion-reduce:transition-none sm:absolute sm:left-0 {!sideControlsVisible ? 'pointer-events-none opacity-0' : 'opacity-100'}"
-					inert={!sideControlsVisible}
-				>
-					<Button size="sm" variant="outline" class="touch-manipulation" onclick={restartAll} disabled={!currentTrack}>
-						<IterationCw data-icon="inline-start" />
-						Sar
-					</Button>
-					<Button
-						size="sm"
-						variant="outline"
-						class="touch-manipulation"
-						onclick={handlePreviousTrack}
-						disabled={!currentTrack}
-						title="3 saniyeden fazla çaldıysa mevcut parçayı başa sar, aksi halde önceki parçaya geç"
-					>
-						<ArrowLeftFromLine data-icon="inline-start" />
-						Önceki
-					</Button>
-					<Button
-						size="sm"
-						variant="outline"
-						class="touch-manipulation"
-						onclick={handleNextTrack}
-						disabled={!currentTrack}
-					>
-						<ArrowRightFromLine data-icon="inline-start" />
-						Sonraki
-					</Button>
-				</div>
-				<div class="flex items-center justify-center">
-					<Button
-						size="icon-lg"
-						variant={sideControlsVisible ? "secondary" : "ghost"}
-						class="touch-manipulation transition-all duration-500 ease-out motion-reduce:transition-none"
-						aria-label={isPlaylistFinished ? "Başa sar" : currentTrack?.playing ? "Duraklat" : "Oynat"}
-						disabled={!currentTrack}
-						onclick={isPlaylistFinished ? restartAll : togglePlayback}
-					>
-						{#if isPlaylistFinished}
-							<Undo2 />
-						{:else if currentTrack?.playing}
-							<Pause />
-						{:else}
-							<Play />
-						{/if}
-					</Button>
-				</div>
-				<div
-					class="relative flex items-center gap-1 transition-opacity duration-500 ease-out motion-reduce:transition-none sm:absolute sm:right-0 {!sideControlsVisible ? 'pointer-events-none opacity-0' : 'opacity-100'}"
-					inert={!sideControlsVisible}
-				>
-					<Button
-						size="sm"
-						variant="outline"
-						class="touch-manipulation"
-						aria-label="Saygı duruşu ve İstiklal Marşı'nı yeniden başlat"
-						title="Saygı duruşu ve İstiklal Marşı'nı yeniden başlat"
-						onclick={replayIntro}
-					>
-						<Drum data-icon="inline-start" />
-						Marş
-					</Button>
-					<Button size="sm" variant="outline" class="touch-manipulation" onclick={toggleFullscreen}>
-						{#if isFullscreen}
-							<Shrink data-icon="inline-start" />
-						{:else}
-							<Expand data-icon="inline-start" />
-						{/if}
-						Tam Ekran
-					</Button>
-				</div>
-			</div>
+			<div class="relative mt-2 h-28 sm:h-8" aria-hidden="true" inert></div>
 		</div>
 	</main>
 	</div>
 {/if}
+
+<div
+	aria-hidden="true"
+	class="pointer-events-none fixed inset-0 z-[55] bg-black transition-opacity duration-[1500ms] ease-in-out {(isIntroComplete ? isMainPortraitVisible : isIntroCoverVisible) ? 'opacity-100' : 'opacity-0'}"
+	ontransitionend={handleIntroCoverTransitionEnd}
+>
+	<div class="{PORTRAIT_FRAME_CLASS} overflow-hidden">
+		<img src={staticAsset("newfoto.jpg")} alt="" class="h-full w-full object-contain" />
+		<div
+			class="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-b from-transparent via-black/60 to-black transition-opacity duration-300 ease-in-out {isIntroComplete ? 'opacity-100' : 'opacity-0'}"
+		></div>
+	</div>
+</div>
+{#if !isIntroComplete && introError}
+	<p
+		class="pointer-events-none fixed inset-x-4 bottom-20 z-[70] mx-auto w-fit max-w-xl rounded-lg bg-black/75 px-4 py-2 text-center text-sm text-white"
+		role="alert"
+	>
+		{introError}
+	</p>
+{/if}
+
+<footer
+	class="pointer-events-none fixed inset-x-0 bottom-[var(--page-gutter)] z-[60] mx-auto flex w-full max-w-[112rem] flex-col items-center gap-3 px-[var(--page-gutter)] sm:grid sm:grid-cols-[1fr_auto_1fr] sm:items-center sm:gap-0"
+	style="--page-gutter: clamp(1.25rem, 3vw, 3rem)"
+>
+	<div
+		class="pointer-events-none flex items-center gap-1 justify-self-center transition-opacity duration-500 ease-out sm:justify-self-start {!sideControlsVisible ? 'opacity-0' : 'opacity-100'}"
+		inert={!sideControlsVisible}
+	>
+		<Button
+			size="sm"
+			variant={isIntroComplete ? "outline" : "ghost"}
+			class="pointer-events-auto touch-manipulation transition-all duration-300 ease-in-out"
+			aria-label={isIntroComplete ? "Sar" : "Videoyu başa sar"}
+			title={isIntroComplete ? "Sar" : "Videoyu başa sar"}
+			disabled={isIntroComplete ? !currentTrack : !isIntroReady || isCompletingIntro}
+			onclick={isIntroComplete ? restartAll : restartIntroPlayback}
+		>
+			<IterationCw data-icon="inline-start" />
+			Sar
+		</Button>
+		<div class="grid w-[4.375rem]">
+			{#if !isIntroComplete}
+				<div class="col-start-1 row-start-1" transition:fade={{ duration: 280 }}>
+					<Button
+						size="sm"
+						variant="ghost"
+						class="pointer-events-auto touch-manipulation transition-all duration-300 ease-in-out"
+						aria-label="Anma bölümüne geç"
+						title="Anma bölümüne geç"
+						disabled={isCompletingIntro}
+						onclick={skipIntro}
+					>
+						<ClefTreble data-icon="inline-start" />
+						Anma
+					</Button>
+				</div>
+			{:else}
+				<div class="col-start-1 row-start-1" transition:fade={{ duration: 280 }}>
+					<Button
+						size="sm"
+						variant="outline"
+						class="pointer-events-auto touch-manipulation transition-all duration-300 ease-in-out"
+						aria-label="Şiir bölümüne dön"
+						title="Şiir bölümüne dön"
+						disabled={!currentTrack || isCompletingIntro}
+						onclick={replayIntro}
+					>
+						<Feather data-icon="inline-start" />
+						Şiir
+					</Button>
+				</div>
+			{/if}
+		</div>
+	</div>
+
+
+	<div class="pointer-events-none grid w-64 max-w-full grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 sm:w-64">
+		<div
+			class="pointer-events-none w-full min-w-0 overflow-x-clip overflow-y-visible transition-opacity duration-300 ease-in-out {!sideControlsVisible ? 'opacity-0' : 'opacity-100'}"
+			aria-hidden={!isIntroComplete || !sideControlsVisible}
+			inert={!isIntroComplete || !sideControlsVisible}
+		>
+			<div class="flex w-full min-w-0 justify-end overflow-x-clip overflow-y-visible">
+				<Button
+					size="icon"
+					variant="outline"
+					class="pointer-events-auto touch-manipulation transition-all duration-300 ease-in-out"
+					style="width: 4rem; transform-origin: right center; transform: scaleX({isIntroComplete ? 1 : 0})"
+					aria-label="Önceki"
+					title="3 saniyeden fazla çaldıysa mevcut parçayı başa sar, aksi halde önceki parçaya geç"
+					disabled={!currentTrack}
+					onclick={handlePreviousTrack}
+				>
+					<ArrowLeftFromLine />
+				</Button>
+			</div>
+		</div>
+
+		<div class="flex items-center justify-center">
+			<Button
+				size="icon-lg"
+				variant={sideControlsVisible ? "default" : "ghost"}
+				class="pointer-events-auto touch-manipulation transition-all duration-300 ease-in-out"
+				aria-label={isIntroComplete
+					? isPlaylistFinished ? "Başa sar" : currentTrack?.playing ? "Duraklat" : "Oynat"
+					: isIntroCoverAnimating || (isIntroLoading && hasIntroStarted)
+						? "Geçiş yapılıyor"
+						: isIntroPlaying ? "Videoyu duraklat" : hasIntroStarted ? "Videoyu sürdür" : "Videoyu başlat"}
+				disabled={isIntroComplete ? !currentTrack : !isIntroReady || isCompletingIntro || isIntroCoverAnimating}
+				onclick={isIntroComplete ? isPlaylistFinished ? restartAll : togglePlayback : toggleIntroPlayback}
+			>
+				{#if isIntroComplete}
+					{#if isPlaylistFinished}
+						<Undo2 />
+					{:else if currentTrack?.playing}
+						<Pause />
+					{:else}
+						<Play />
+					{/if}
+				{:else if isIntroPlaying || (isIntroLoading && hasIntroStarted)}
+					<Pause />
+				{:else}
+					<Play />
+				{/if}
+			</Button>
+		</div>
+
+		<div
+			class="pointer-events-none w-full min-w-0 overflow-x-clip overflow-y-visible transition-opacity duration-300 ease-in-out {!sideControlsVisible ? 'opacity-0' : 'opacity-100'}"
+			aria-hidden={!isIntroComplete || !sideControlsVisible}
+			inert={!isIntroComplete || !sideControlsVisible}
+		>
+			<div class="w-full min-w-0 overflow-x-clip overflow-y-visible">
+				<Button
+					size="icon"
+					variant="outline"
+					class="pointer-events-auto touch-manipulation transition-all duration-300 ease-in-out"
+					style="width: 4rem; transform-origin: left center; transform: scaleX({isIntroComplete ? 1 : 0})"
+					aria-label="Sonraki"
+					disabled={!currentTrack}
+					onclick={handleNextTrack}
+				>
+					<ArrowRightFromLine />
+				</Button>
+			</div>
+		</div>
+	</div>
+
+	<div
+		class="pointer-events-none flex items-center gap-1 justify-self-center transition-opacity duration-500 ease-out sm:justify-self-end {!sideControlsVisible ? 'opacity-0' : 'opacity-100'}"
+		inert={!sideControlsVisible}
+	>
+
+
+		<Button
+			size="sm"
+			variant={isIntroComplete ? "outline" : "ghost"}
+			class="pointer-events-auto touch-manipulation transition-all duration-300 ease-in-out"
+			aria-label={isFullscreen ? "Tam ekrandan çık" : "Tam ekran"}
+			aria-pressed={isFullscreen}
+			onclick={toggleFullscreen}
+		>
+			{#if isFullscreen}
+				<Shrink data-icon="inline-start" />
+			{:else}
+				<Expand data-icon="inline-start" />
+			{/if}
+			Tam Ekran
+		</Button>
+	</div>
+</footer>

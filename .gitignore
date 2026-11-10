@@ -31,3 +31,12 @@ vite.config.ts.timestamp-*
 *.log
 npm-debug.log*
 bun-debug.log*
+
+# Generated offline release artifacts
+/10kasim-offline.zip
+/final10kasim.zip
+/.offline-release-stage/
+
+# Local source/intermediate media (the site uses optimized assets in static/)
+*.mkv
+/video-source/0_saygiistiklal-full-source.mp4

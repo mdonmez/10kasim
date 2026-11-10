@@ -6,6 +6,7 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import { env } from 'node:process';
 import { defineConfig } from 'vite';
 
+const isOfflineBuild = env.OFFLINE_BUILD === 'true';
 const isGithubPages = env.GITHUB_PAGES === 'true';
 const base: '' | `/${string}` = isGithubPages ? (env.BASE_PATH ?? '/10kasim') as '' | `/${string}` : '';
 
@@ -20,8 +21,22 @@ export default defineConfig({
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
 
-			adapter: isGithubPages ? staticAdapter({ fallback: '404.html' }) : cloudflareAdapter(),
-			paths: { base }
+			adapter:
+				isOfflineBuild || isGithubPages
+					? staticAdapter({ fallback: '404.html' })
+					: cloudflareAdapter(),
+			paths: { base, relative: isOfflineBuild },
+			prerender: isOfflineBuild
+				? {
+						handleHttpError: ({ path, message }) => {
+							if (path === '/media/siirvideosu.webm' || path === '/media/onkasim.opus') return;
+							throw new Error(message);
+						}
+					}
+				: undefined
 		})
-	]
+	],
+	define: {
+		__OFFLINE_BUILD__: JSON.stringify(isOfflineBuild)
+	}
 });

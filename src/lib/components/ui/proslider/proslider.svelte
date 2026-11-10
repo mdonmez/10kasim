@@ -34,7 +34,7 @@
 			<SliderPrimitive.Range
 				data-slot="proslider-range"
 				class={cn(
-					"absolute select-none rounded-full data-horizontal:h-full data-vertical:w-full bg-gradient-to-r from-primary/35 via-primary/70 to-primary transition-[width,transform] duration-100 ease-out motion-reduce:transition-none after:absolute after:-right-1 after:top-1/2 after:size-3 after:-translate-y-1/2 after:rounded-full after:bg-primary after:opacity-80 after:blur-md after:content-['']"
+					"absolute select-none rounded-full data-horizontal:h-full data-vertical:w-full bg-gradient-to-r from-primary/35 via-primary/70 to-primary transition-[width,transform] duration-100 ease-out after:absolute after:-right-1 after:top-1/2 after:size-3 after:-translate-y-1/2 after:rounded-full after:bg-primary after:opacity-80 after:blur-md after:content-['']"
 				)}
 			/>
 			{#each cuts as cut, i (i)}

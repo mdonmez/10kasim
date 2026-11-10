@@ -1,56 +1,26 @@
-# sv
+# 10 Kasım Memorial Presentation
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+A SvelteKit memorial presentation with an opening poetry video and an audio-led main section. The project supports the online Cloudflare and GitHub Pages builds, plus a self-contained offline package for local playback.
 
-## Creating a project
+## Development
 
-If you're seeing this, you've probably already done this step. Congrats!
-
-```sh
-# create a new project
-npx sv create my-app
-```
-
-To recreate this project with the same configuration:
+Requires [Bun](https://bun.sh/).
 
 ```sh
-# recreate this project
-bun x sv@1.1.1 create --template minimal --types ts --add tailwindcss="plugins:typography" enhanced-img sveltekit-adapter="adapter:auto" ai-tools="ide:opencode,other" --install bun ./
+bun install --frozen-lockfile
+bun run dev
 ```
 
-## Adding features
-
-Add features to your project with `sv add`:
+Run the project check before publishing:
 
 ```sh
-npx sv add
+bun run check
 ```
 
-For example, to add Tailwind CSS:
+## Builds
 
-```sh
-npx sv add tailwindcss
-```
+- `bun run build` builds the default Cloudflare deployment.
+- GitHub Pages is built in CI with `GITHUB_PAGES=true` and the Pages base path.
+- `bun run build:offline` creates `10kasim-offline.zip` for offline use.
 
-## Developing
-
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
-
-```sh
-npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
-```
-
-## Building
-
-To create a production version of your app:
-
-```sh
-npm run build
-```
-
-You can preview the production build with `npm run preview`.
-
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+Extract the offline ZIP, keep its folder structure intact, and open `10kasim-offline/index.html` in Firefox ESR. It does not require a local server or internet connection. If playback does not start, verify that extraction completed and reopen the HTML file.
